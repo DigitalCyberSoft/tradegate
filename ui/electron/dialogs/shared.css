@@ -1,0 +1,179 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif;
+  font-size: 14px;
+  background: #1a1a2e;
+  color: #e0e0e0;
+  overflow: hidden;
+  user-select: none;
+}
+
+/* Frameless titlebar */
+.titlebar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 32px;
+  background: #16213e;
+  -webkit-app-region: drag;
+  padding: 0 8px;
+}
+
+.titlebar-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #a0a0b8;
+}
+
+.titlebar-close {
+  -webkit-app-region: no-drag;
+  width: 28px;
+  height: 28px;
+  border: none;
+  background: transparent;
+  color: #a0a0b8;
+  font-size: 16px;
+  cursor: pointer;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.titlebar-close:hover {
+  background: #e94560;
+  color: #fff;
+}
+
+/* Content area */
+.content {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - 32px);
+}
+
+/* Table styles */
+.table-container {
+  flex: 1;
+  overflow-y: auto;
+  border: 1px solid #2a2a4a;
+  border-radius: 4px;
+  margin-bottom: 12px;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+thead th {
+  position: sticky;
+  top: 0;
+  background: #16213e;
+  color: #a0a0b8;
+  font-weight: 600;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 8px 12px;
+  text-align: left;
+  border-bottom: 1px solid #2a2a4a;
+}
+
+tbody tr {
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+tbody tr:hover {
+  background: #2a2a4a;
+}
+
+tbody tr.selected {
+  background: #533483;
+}
+
+tbody tr.selected:hover {
+  background: #6b44a0;
+}
+
+tbody td {
+  padding: 8px 12px;
+  border-bottom: 1px solid #1e1e3a;
+  font-size: 13px;
+}
+
+/* Input styles */
+input[type="password"],
+input[type="text"] {
+  width: 100%;
+  padding: 10px 12px;
+  background: #16213e;
+  border: 1px solid #2a2a4a;
+  border-radius: 4px;
+  color: #e0e0e0;
+  font-size: 14px;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+input[type="password"]:focus,
+input[type="text"]:focus {
+  border-color: #533483;
+}
+
+label {
+  display: block;
+  margin-bottom: 6px;
+  color: #a0a0b8;
+  font-size: 13px;
+}
+
+/* Button styles */
+.button-row {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+button {
+  padding: 8px 20px;
+  border: none;
+  border-radius: 4px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+button.primary {
+  background: #533483;
+  color: #fff;
+}
+
+button.primary:hover {
+  background: #6b44a0;
+}
+
+button.secondary {
+  background: #2a2a4a;
+  color: #a0a0b8;
+}
+
+button.secondary:hover {
+  background: #3a3a5a;
+}
+
+/* Warning text */
+.warning {
+  color: #e94560;
+  font-size: 13px;
+  margin-bottom: 8px;
+}

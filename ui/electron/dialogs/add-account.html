@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <link rel="stylesheet" href="shared.css">
+  <title>Add Account</title>
+  <style>
+    .field { margin-bottom: 12px; }
+    select {
+      width: 100%;
+      padding: 10px 12px;
+      background: #16213e;
+      border: 1px solid #2a2a4a;
+      border-radius: 4px;
+      color: #e0e0e0;
+      font-size: 14px;
+      outline: none;
+      transition: border-color 0.2s;
+      appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23a0a0b8' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 12px center;
+    }
+    select:focus { border-color: #533483; }
+    select option { background: #16213e; color: #e0e0e0; }
+  </style>
+</head>
+<body>
+  <div class="titlebar">
+    <span class="titlebar-title">Add Account</span>
+    <button class="titlebar-close" id="btn-close">&times;</button>
+  </div>
+  <div class="content">
+    <div class="field">
+      <label for="input-platform">Platform</label>
+      <select id="input-platform"></select>
+    </div>
+    <div class="field">
+      <label for="input-backend">Storage Backend</label>
+      <select id="input-backend"></select>
+    </div>
+    <div class="field">
+      <label for="input-username">Username</label>
+      <input type="text" id="input-username" placeholder="Login username">
+    </div>
+    <div class="field">
+      <label for="input-label">Label</label>
+      <input type="text" id="input-label" placeholder="Friendly name (optional)">
+    </div>
+    <div class="field">
+      <label for="input-password">Password</label>
+      <input type="password" id="input-password" placeholder="Account password">
+    </div>
+    <div class="button-row">
+      <button class="secondary" id="btn-cancel">Cancel</button>
+      <button class="primary" id="btn-save">Save</button>
+    </div>
+  </div>
+
+  <script>
+    const platformSelect = document.getElementById("input-platform");
+    const backendSelect = document.getElementById("input-backend");
+    const usernameInput = document.getElementById("input-username");
+    const labelInput = document.getElementById("input-label");
+    const passwordInput = document.getElementById("input-password");
+
+    function submit() {
+      const username = usernameInput.value.trim();
+      const password = passwordInput.value;
+      if (!username) { usernameInput.focus(); return; }
+      if (!password) { passwordInput.focus(); return; }
+
+      window.tradegate.sendResult({
+        platform: platformSelect.value,
+        backend: backendSelect.value,
+        username: username,
+        label: labelInput.value.trim(),
+        password: password,
+      });
+    }
+
+    document.getElementById("btn-save").addEventListener("click", submit);
+    document.getElementById("btn-cancel").addEventListener("click", () => window.tradegate.cancel());
+    document.getElementById("btn-close").addEventListener("click", () => window.tradegate.cancel());
+
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && e.target.tagName !== "SELECT") {
+        e.preventDefault();
+        submit();
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        window.tradegate.cancel();
+      }
+    });
+
+    const backendLabels = {
+      "keyring": "System Keyring",
+      "encrypted_file": "Encrypted File",
+    };
+
+    window.tradegate.onInitData((data) => {
+      const platforms = data.platforms || [];
+      platforms.forEach((p) => {
+        const opt = document.createElement("option");
+        opt.value = p;
+        opt.textContent = p;
+        platformSelect.appendChild(opt);
+      });
+
+      const backends = data.backends || ["keyring", "encrypted_file"];
+      backends.forEach((b) => {
+        const opt = document.createElement("option");
+        opt.value = b;
+        opt.textContent = backendLabels[b] || b;
+        backendSelect.appendChild(opt);
+      });
+
+      if (data.platform) {
+        platformSelect.value = data.platform;
+      }
+      if (data.backend) {
+        backendSelect.value = data.backend;
+      }
+
+      usernameInput.focus();
+    });
+  </script>
+</body>
+</html>

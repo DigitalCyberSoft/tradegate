@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <link rel="stylesheet" href="shared.css">
+  <title>Select Account</title>
+  <style>
+    .button-row { justify-content: space-between; align-items: center; }
+    .button-group { display: flex; gap: 8px; align-items: center; }
+    button.danger { background: #5a1a2a; color: #e94560; }
+    button.danger:hover { background: #e94560; color: #fff; }
+    .toggle-label {
+      display: flex; align-items: center; gap: 6px;
+      cursor: pointer; font-size: 12px; color: #a0a0b8;
+      margin-right: 4px; user-select: none;
+    }
+    .toggle-label input { cursor: pointer; }
+  </style>
+</head>
+<body>
+  <div class="titlebar">
+    <span class="titlebar-title" id="title">Select Account</span>
+    <button class="titlebar-close" id="btn-close">&times;</button>
+  </div>
+  <div class="content">
+    <div class="table-container" id="table-container">
+      <table>
+        <thead>
+          <tr>
+            <th>Label</th>
+            <th>Username</th>
+            <th>Platform</th>
+            <th>Backend</th>
+          </tr>
+        </thead>
+        <tbody id="accounts-body"></tbody>
+      </table>
+    </div>
+    <div id="auto-submit-warning" class="warning" style="display:none; margin-bottom:8px;">
+      Auto-submit may cause your password to be submitted to the wrong window if focus changes.
+    </div>
+    <div class="button-row">
+      <div class="button-group">
+        <button class="primary" id="btn-add">+ Add</button>
+        <button class="secondary" id="btn-edit">Edit</button>
+        <button class="danger" id="btn-delete">Delete</button>
+      </div>
+      <div class="button-group">
+        <label class="toggle-label" title="When off, credentials are filled but Enter is not pressed">
+          <input type="checkbox" id="chk-auto-submit">
+          <span>Auto-submit</span>
+        </label>
+        <button class="secondary" id="btn-cancel">Cancel</button>
+        <button class="primary" id="btn-login">Login</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let selectedIndex = 0;
+    let accounts = [];
+
+    function renderAccounts() {
+      const tbody = document.getElementById("accounts-body");
+      tbody.innerHTML = "";
+      accounts.forEach((acct, i) => {
+        const tr = document.createElement("tr");
+        tr.dataset.index = i;
+        if (i === selectedIndex) tr.classList.add("selected");
+
+        const tdLabel = document.createElement("td");
+        tdLabel.textContent = acct.label || acct.username;
+        tr.appendChild(tdLabel);
+
+        const tdUser = document.createElement("td");
+        tdUser.textContent = acct.username;
+        tr.appendChild(tdUser);
+
+        const tdPlatform = document.createElement("td");
+        tdPlatform.textContent = acct.platform || "";
+        tr.appendChild(tdPlatform);
+
+        const tdBackend = document.createElement("td");
+        tdBackend.textContent = acct.backend;
+        tr.appendChild(tdBackend);
+
+        tr.addEventListener("click", () => {
+          selectedIndex = i;
+          renderAccounts();
+        });
+
+        tr.addEventListener("dblclick", () => {
+          selectedIndex = i;
+          doLogin();
+        });
+
+        tbody.appendChild(tr);
+      });
+    }
+
+    function doLogin() {
+      const autoSubmit = document.getElementById("chk-auto-submit").checked;
+      window.tradegate.sendResult({ index: selectedIndex, action: "login", auto_submit: autoSubmit });
+    }
+
+    function doEdit() {
+      window.tradegate.sendResult({ index: selectedIndex, action: "edit" });
+    }
+
+    function doDelete() {
+      window.tradegate.sendResult({ index: selectedIndex, action: "delete" });
+    }
+
+    function doAdd() {
+      window.tradegate.sendResult({ action: "add" });
+    }
+
+    function scrollSelectedIntoView() {
+      const row = document.querySelector(`tr[data-index="${selectedIndex}"]`);
+      if (row) row.scrollIntoView({ block: "nearest" });
+    }
+
+    function updateWarning() {
+      document.getElementById("auto-submit-warning").style.display =
+        document.getElementById("chk-auto-submit").checked ? "" : "none";
+    }
+
+    document.getElementById("chk-auto-submit").addEventListener("change", updateWarning);
+    document.getElementById("btn-login").addEventListener("click", doLogin);
+    document.getElementById("btn-add").addEventListener("click", doAdd);
+    document.getElementById("btn-edit").addEventListener("click", doEdit);
+    document.getElementById("btn-delete").addEventListener("click", doDelete);
+    document.getElementById("btn-cancel").addEventListener("click", () => window.tradegate.cancel());
+    document.getElementById("btn-close").addEventListener("click", () => window.tradegate.cancel());
+
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        if (selectedIndex < accounts.length - 1) {
+          selectedIndex++;
+          renderAccounts();
+          scrollSelectedIntoView();
+        }
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        if (selectedIndex > 0) {
+          selectedIndex--;
+          renderAccounts();
+          scrollSelectedIntoView();
+        }
+      } else if (e.key === "Enter") {
+        e.preventDefault();
+        doLogin();
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        window.tradegate.cancel();
+      } else if (e.key === "Delete") {
+        e.preventDefault();
+        doDelete();
+      } else if (e.key === "e" && e.ctrlKey) {
+        e.preventDefault();
+        doEdit();
+      } else if (e.key === "n" && e.ctrlKey) {
+        e.preventDefault();
+        doAdd();
+      }
+    });
+
+    window.tradegate.onInitData((data) => {
+      accounts = data.accounts || [];
+      if (data.platform) {
+        document.getElementById("title").textContent = `Select ${data.platform} Account`;
+      }
+      document.getElementById("chk-auto-submit").checked = !!data.auto_submit;
+      updateWarning();
+      selectedIndex = 0;
+      renderAccounts();
+    });
+  </script>
+</body>
+</html>

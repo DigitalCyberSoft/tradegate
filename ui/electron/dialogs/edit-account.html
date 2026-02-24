@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <link rel="stylesheet" href="shared.css">
+  <title>Edit Account</title>
+  <style>
+    .field { margin-bottom: 12px; }
+    .readonly-value {
+      padding: 8px 12px;
+      background: #0f0f23;
+      border: 1px solid #2a2a4a;
+      border-radius: 4px;
+      color: #888;
+      font-size: 14px;
+    }
+    .hint { font-size: 11px; color: #666; margin-top: 4px; }
+  </style>
+</head>
+<body>
+  <div class="titlebar">
+    <span class="titlebar-title" id="title">Edit Account</span>
+    <button class="titlebar-close" id="btn-close">&times;</button>
+  </div>
+  <div class="content">
+    <div class="field">
+      <label>Platform</label>
+      <div class="readonly-value" id="field-platform"></div>
+    </div>
+    <div class="field">
+      <label>Username</label>
+      <div class="readonly-value" id="field-username"></div>
+    </div>
+    <div class="field">
+      <label for="input-label">Label</label>
+      <input type="text" id="input-label" placeholder="Friendly name">
+    </div>
+    <div class="field">
+      <label for="input-password">New Password</label>
+      <input type="password" id="input-password" placeholder="Leave blank to keep current">
+      <div class="hint">Only fill this if you want to change the password.</div>
+    </div>
+    <div class="button-row">
+      <button class="secondary" id="btn-cancel">Cancel</button>
+      <button class="primary" id="btn-save">Save</button>
+    </div>
+  </div>
+
+  <script>
+    const labelInput = document.getElementById("input-label");
+    const passwordInput = document.getElementById("input-password");
+
+    function submit() {
+      const result = { label: labelInput.value };
+      const pw = passwordInput.value;
+      if (pw) result.password = pw;
+      window.tradegate.sendResult(result);
+    }
+
+    document.getElementById("btn-save").addEventListener("click", submit);
+    document.getElementById("btn-cancel").addEventListener("click", () => window.tradegate.cancel());
+    document.getElementById("btn-close").addEventListener("click", () => window.tradegate.cancel());
+
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        submit();
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        window.tradegate.cancel();
+      }
+    });
+
+    window.tradegate.onInitData((data) => {
+      document.getElementById("field-platform").textContent = data.platform || "";
+      document.getElementById("field-username").textContent = data.username || "";
+      labelInput.value = data.label || "";
+      if (data.platform && data.username) {
+        document.getElementById("title").textContent = `Edit ${data.username}`;
+      }
+      labelInput.focus();
+    });
+  </script>
+</body>
+</html>

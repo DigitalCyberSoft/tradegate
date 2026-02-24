@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "tradegate"
+version = "0.1.0"
+description = "Trading platform auto-login launcher"
+requires-python = ">=3.11"
+dependencies = [
+    "secretstorage>=3.3",
+    "cryptography>=41.0",
+    "tomli_w>=1.0",
+]
+
+[project.scripts]
+tradegate = "tradegate.cli:main"
+
+[tool.setuptools.packages.find]
+where = [".."]
+include = ["tradegate*"]

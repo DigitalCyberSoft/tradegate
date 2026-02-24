@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <link rel="stylesheet" href="shared.css">
+  <title>Confirm Delete</title>
+  <style>
+    .message {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      padding: 16px;
+      line-height: 1.5;
+    }
+    .account-name { color: #e94560; font-weight: 600; }
+    button.danger { background: #e94560; color: #fff; }
+    button.danger:hover { background: #ff5a7a; }
+  </style>
+</head>
+<body>
+  <div class="titlebar">
+    <span class="titlebar-title">Confirm Delete</span>
+    <button class="titlebar-close" id="btn-close">&times;</button>
+  </div>
+  <div class="content">
+    <div class="message" id="message">Delete this account?</div>
+    <div class="button-row">
+      <button class="secondary" id="btn-cancel">Cancel</button>
+      <button class="danger" id="btn-confirm">Delete</button>
+    </div>
+  </div>
+
+  <script>
+    document.getElementById("btn-confirm").addEventListener("click", () => {
+      window.tradegate.sendResult({ confirmed: true });
+    });
+    document.getElementById("btn-cancel").addEventListener("click", () => window.tradegate.cancel());
+    document.getElementById("btn-close").addEventListener("click", () => window.tradegate.cancel());
+
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        window.tradegate.sendResult({ confirmed: true });
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        window.tradegate.cancel();
+      }
+    });
+
+    window.tradegate.onInitData((data) => {
+      const name = data.label || data.username || "this account";
+      const platform = data.platform || "";
+      const msg = document.getElementById("message");
+      msg.textContent = "";
+
+      msg.appendChild(document.createTextNode("Delete "));
+      const nameSpan = document.createElement("span");
+      nameSpan.className = "account-name";
+      nameSpan.textContent = name;
+      msg.appendChild(nameSpan);
+
+      if (platform) {
+        msg.appendChild(document.createTextNode(" from "));
+        const platSpan = document.createElement("span");
+        platSpan.className = "account-name";
+        platSpan.textContent = platform;
+        msg.appendChild(platSpan);
+      }
+
+      msg.appendChild(document.createTextNode("?"));
+      msg.appendChild(document.createElement("br"));
+      msg.appendChild(document.createTextNode("This cannot be undone."));
+    });
+  </script>
+</body>
+</html>
