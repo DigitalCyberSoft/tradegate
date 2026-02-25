@@ -25,7 +25,7 @@ class PlatformConfig:
     wm_class: str = ""
     title_pattern: str = ""
     window_timeout: int = 120
-    login_ready_delay: int = 8
+    login_ready_delay: float = 8
     field_order: list[str] = field(default_factory=lambda: ["username", "password"])
     input_strategy: str = "auto"
     extra: dict[str, Any] = field(default_factory=dict)

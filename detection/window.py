@@ -72,14 +72,23 @@ class WindowDetector:
         """Return the set of all window IDs matching the criteria."""
         return set(self._search_all(wm_class=wm_class, title=title))
 
-    def find_window_by_title(self, title: str, exclude: set[int] | None = None) -> int | None:
-        """Find a window whose title contains *title*, skipping IDs in *exclude*."""
+    def find_window_by_title(self, title: str, exclude: set[int] | None = None, wm_class: str = "") -> int | None:
+        """Find a window whose title contains *title*, skipping IDs in *exclude*.
+
+        If *wm_class* is given, search by class first (more reliable for Java
+        apps) and then verify the title matches.
+        """
         exclude = exclude or set()
+        if wm_class:
+            # Search by class, filter by title
+            for wid in self._search_all(wm_class=wm_class, title=title):
+                if wid not in exclude:
+                    return wid
         for wid in self._search_all(title=title):
             if wid in exclude:
                 continue
             wname = self.get_window_title(wid)
-            if wname.endswith(title):
+            if title.lower() in wname.lower():
                 return wid
         return None
 
@@ -113,7 +122,7 @@ class XdotoolWindowDetector(WindowDetector):
     def activate_window(self, wid: int) -> bool:
         try:
             subprocess.run(
-                ["xdotool", "windowactivate", "--sync", str(wid)],
+                ["xdotool", "windowactivate", str(wid)],
                 capture_output=True, timeout=5,
             )
             return True
@@ -122,12 +131,23 @@ class XdotoolWindowDetector(WindowDetector):
 
     def focus_window(self, wid: int) -> bool:
         try:
-            subprocess.run(
-                ["xdotool", "windowfocus", "--sync", str(wid)],
-                capture_output=True, timeout=5,
+            result = subprocess.run(
+                ["xdotool", "getwindowgeometry", "--shell", str(wid)],
+                capture_output=True, text=True, timeout=5,
             )
+            if result.returncode != 0:
+                return False
+            vals = {}
+            for line in result.stdout.splitlines():
+                if "=" in line:
+                    k, v = line.split("=", 1)
+                    vals[k] = int(v)
+            cx = vals["X"] + vals["WIDTH"] // 2
+            cy = vals["Y"] + vals["HEIGHT"] // 2
+            import pyautogui
+            pyautogui.click(cx, cy)
             return True
-        except (subprocess.SubprocessError, FileNotFoundError):
+        except Exception:
             return False
 
     def get_active_window_title(self) -> str:
@@ -399,7 +419,7 @@ class Win32WindowDetector(WindowDetector):
 # Factory
 # ---------------------------------------------------------------------------
 
-def create_window_detector(poll_interval: float = 1.0) -> WindowDetector:
+def create_window_detector(poll_interval: float = 0.2) -> WindowDetector:
     """Return a WindowDetector appropriate for the current platform."""
     if sys.platform == "darwin":
         return MacOSWindowDetector(poll_interval)

@@ -19,33 +19,84 @@ from tradegate.detection.window import create_window_detector
 log = logging.getLogger(__name__)
 
 
+def _get_window_geometry(wid: int) -> tuple[int, int, int, int] | None:
+    """Return (x, y, width, height) for a window, or None on failure."""
+    try:
+        result = subprocess.run(
+            ["xdotool", "getwindowgeometry", "--shell", str(wid)],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode != 0:
+            return None
+        vals = {}
+        for line in result.stdout.splitlines():
+            if "=" in line:
+                k, v = line.split("=", 1)
+                vals[k] = int(v)
+        return (vals["X"], vals["Y"], vals["WIDTH"], vals["HEIGHT"])
+    except (subprocess.SubprocessError, FileNotFoundError, KeyError, ValueError):
+        return None
+
+
 def _take_screenshot(wid: int, path: str) -> bool:
     """Capture a screenshot of the given window to *path*.
 
-    On Linux, tries ImageMagick ``import`` first (window-specific capture),
-    then falls back to pyautogui (full-screen capture).
-    On macOS/Windows, uses pyautogui directly.
+    Takes a full-screen screenshot and crops to the window geometry.
+    This works reliably with Java Swing and other toolkits where
+    window-specific capture (import -window) grabs the wrong content.
     """
     if sys.platform == "linux":
-        try:
-            result = subprocess.run(
-                ["import", "-window", str(wid), path],
-                capture_output=True, timeout=10,
-            )
-            if result.returncode == 0:
-                return True
-        except (subprocess.SubprocessError, FileNotFoundError):
-            log.debug("ImageMagick import not available, trying pyautogui")
+        geom = _get_window_geometry(wid)
+        if geom is not None:
+            x, y, w, h = geom
+            try:
+                result = subprocess.run(
+                    ["import", "-window", "root",
+                     "-crop", f"{w}x{h}+{x}+{y}", "+repage", path],
+                    capture_output=True, timeout=10,
+                )
+                if result.returncode == 0:
+                    return True
+            except (subprocess.SubprocessError, FileNotFoundError):
+                log.debug("ImageMagick import not available, trying pyautogui")
 
-    # All platforms: pyautogui full-screen capture fallback
+    # All platforms: pyautogui full-screen capture + crop fallback
     try:
         import pyautogui
         screenshot = pyautogui.screenshot()
+        if sys.platform == "linux":
+            geom = _get_window_geometry(wid)
+            if geom is not None:
+                x, y, w, h = geom
+                screenshot = screenshot.crop((x, y, x + w, y + h))
         screenshot.save(path)
         return True
     except Exception as e:
         log.debug("pyautogui screenshot failed: %s", e)
         return False
+
+
+def _prepare_for_ocr(path: str) -> None:
+    """Convert screenshot to grayscale so tesseract runs faster.
+
+    Tries ImageMagick first, PIL as fallback.
+    """
+    try:
+        subprocess.run(
+            ["convert", path, "-colorspace", "Gray", path],
+            capture_output=True, timeout=10,
+        )
+        return
+    except (subprocess.SubprocessError, FileNotFoundError):
+        pass
+
+    try:
+        from PIL import Image
+        img = Image.open(path)
+        img = img.convert("L")
+        img.save(path)
+    except Exception as e:
+        log.debug("PIL image prep failed: %s", e)
 
 
 def _is_username_prefilled(username: str, wid: int) -> bool:
@@ -59,12 +110,19 @@ def _is_username_prefilled(username: str, wid: int) -> bool:
     if os.name != "nt":
         os.chmod(path, 0o600)
     try:
+        t0 = time.monotonic()
         if not _take_screenshot(wid, path):
             return False
+        t1 = time.monotonic()
+        _prepare_for_ocr(path)
+        t2 = time.monotonic()
         ocr = subprocess.run(
-            ["tesseract", path, "stdout", "--psm", "6"],
+            ["tesseract", path, "stdout", "--oem", "1", "--psm", "3"],
             capture_output=True, text=True, timeout=10,
         )
+        t3 = time.monotonic()
+        log.info("Timing: screenshot=%.2fs, grayscale=%.2fs, tesseract=%.2fs, total=%.2fs",
+                 t1 - t0, t2 - t1, t3 - t2, t3 - t0)
         text = ocr.stdout.lower()
         log.info("OCR text snippet: %r", text[:200])
         # Find text between "username" and "password" labels
@@ -155,20 +213,21 @@ def launch_with_account(platform_name: str, account, cred_mgr: CredentialManager
 
     # Determine the login window marker from title_pattern
     marker = plat_cfg.title_pattern or "Login"
+    wm_class = plat_cfg.wm_class or ""
 
     # Create platform-appropriate window detector
     detector = create_window_detector()
 
     # Check if a login window is already open — if so, reuse it
-    login_wid = detector.find_window_by_title(marker)
+    login_wid = _find_login_window(detector, marker, wm_class, plugin)
     if login_wid is not None:
         log.info("Existing login window found (wid=%d), reusing it.", login_wid)
         detector.activate_window(login_wid)
-        time.sleep(0.3)
+        time.sleep(0.1)
         detector.focus_window(login_wid)
     else:
         # Snapshot existing windows matching the marker so we only match the new one
-        existing_login = detector.find_windows(title=marker)
+        existing_login = detector.find_windows(wm_class=wm_class, title=marker) if wm_class else detector.find_windows(title=marker)
 
         log.info("Launching: %s", " ".join(cmd))
         try:
@@ -178,7 +237,7 @@ def launch_with_account(platform_name: str, account, cred_mgr: CredentialManager
             return 1
 
         # Wait for the new login screen
-        login_wid = _wait_for_login_screen(detector, timeout=plat_cfg.window_timeout, marker=marker, exclude=existing_login)
+        login_wid = _wait_for_login_screen(detector, timeout=plat_cfg.window_timeout, marker=marker, exclude=existing_login, wm_class=wm_class, plugin=plugin)
         if login_wid is None:
             print(
                 f"Error: timed out waiting for {platform_name} login screen "
@@ -187,17 +246,24 @@ def launch_with_account(platform_name: str, account, cred_mgr: CredentialManager
             )
             return 1
 
-    # Small extra delay for the form fields to be interactive
-    time.sleep(1)
+    # Configurable delay for the form fields to be interactive
+    t_start = time.monotonic()
+    log.info("Waiting %.2fs for form fields to be interactive...", plat_cfg.login_ready_delay)
+    time.sleep(plat_cfg.login_ready_delay)
+    t_after_delay = time.monotonic()
+    log.info("Ready delay done (%.2fs elapsed)", t_after_delay - t_start)
 
     # Check if username is already pre-filled (e.g. "Remember Me")
     username_prefilled = _is_username_prefilled(account.username, login_wid)
+    t_after_ocr = time.monotonic()
+    log.info("Prefill check done (%.2fs elapsed, ocr=%.2fs)", t_after_ocr - t_start, t_after_ocr - t_after_delay)
     if username_prefilled:
         log.info("Username %r already pre-filled, skipping to password.", account.username)
 
     # Fill login form via the configured input strategy
     auto_submit = general.get("auto_submit", False) and not no_submit
     input_handler = _get_input_strategy(plat_cfg.input_strategy)
+    log.info("Using input strategy: %s", type(input_handler).__name__)
 
     # AT-SPI has a different call signature
     from tradegate.detection.atspi_fill import AtspiInspector
@@ -218,6 +284,8 @@ def launch_with_account(platform_name: str, account, cred_mgr: CredentialManager
             username_prefilled=username_prefilled,
             expected_wid=login_wid,
         )
+    t_after_fill = time.monotonic()
+    log.info("Form fill done (%.2fs elapsed, fill=%.2fs)", t_after_fill - t_start, t_after_fill - t_after_ocr)
     del password
 
     if filled:
@@ -232,26 +300,53 @@ def launch_with_account(platform_name: str, account, cred_mgr: CredentialManager
         return 1
 
 
+def _find_login_window(detector, marker, wm_class, plugin, exclude=None):
+    """Find a window matching *marker*/*wm_class* that the plugin considers a login screen."""
+    candidates = list(detector.find_windows(wm_class=wm_class, title=marker)) if wm_class else []
+    if not candidates:
+        candidates = list(detector.find_windows(title=marker))
+    exclude = exclude or set()
+    for wid in candidates:
+        if wid in exclude:
+            continue
+        title = detector.get_window_title(wid)
+        if plugin.is_login_screen(title):
+            return wid
+        log.debug("Skipping wid=%d title=%r (not a login screen)", wid, title)
+    return None
+
+
 def _wait_for_login_screen(
     detector,
     timeout: int = 120,
     marker: str = "Login",
     exclude: set[int] | None = None,
+    wm_class: str = "",
+    plugin=None,
 ) -> int | None:
     """Poll for a window titled *marker*, activate it when found. Returns wid or None."""
     deadline = time.monotonic() + timeout
-    log.info("Waiting for login screen (marker=%r, timeout=%ds)", marker, timeout)
+    log.info("Waiting for login screen (marker=%r, wm_class=%r, timeout=%ds)", marker, wm_class, timeout)
     while time.monotonic() < deadline:
-        wid = detector.find_window_by_title(marker, exclude=exclude)
+        if plugin is not None:
+            wid = _find_login_window(detector, marker, wm_class, plugin, exclude=exclude)
+        else:
+            wid = detector.find_window_by_title(marker, exclude=exclude, wm_class=wm_class)
         if wid is not None:
+            t0 = time.monotonic()
             log.info("Login screen detected (wid=%d), activating...", wid)
             detector.activate_window(wid)
-            time.sleep(0.3)
+            t1 = time.monotonic()
+            log.info("activate_window took %.2fs", t1 - t0)
+            time.sleep(0.1)
             detector.focus_window(wid)
+            t2 = time.monotonic()
+            log.info("focus_window took %.2fs (total activate+focus=%.2fs)", t2 - t1 - 0.1, t2 - t0)
             return wid
-        active_title = detector.get_active_window_title()
-        log.info("Active window: %r, waiting...", active_title)
-        time.sleep(0.5)
+        if log.isEnabledFor(logging.DEBUG):
+            active_title = detector.get_active_window_title()
+            log.debug("Active window: %r, waiting...", active_title)
+        time.sleep(0.15)
     log.warning("Login screen not detected within %ds", timeout)
     return None
 

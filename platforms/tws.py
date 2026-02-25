@@ -18,7 +18,7 @@ class TWSPlugin(PlatformPlugin):
             "wm_class": "install4j-jclient-Launcher",
             "title_pattern": "Login",
             "window_timeout": 120,
-            "login_ready_delay": 8,
+            "login_ready_delay": 1,
             "field_order": ["username", "password"],
             "input_strategy": "",
         }
@@ -31,13 +31,11 @@ class TWSPlugin(PlatformPlugin):
         return [binary]
 
     def is_login_screen(self, window_title: str) -> bool:
-        """TWS login screen has no [username] in the title.
+        """TWS login window is titled exactly "Login".
 
-        Once logged in, the title contains something like [papertrading123].
+        Rejects post-login windows like "Login Messages", "Announcements",
+        and titles containing [username] (e.g. "[papertrading123]").
         """
         if not window_title:
-            return True
-        # If title contains brackets with a username, we're past login
-        if "[" in window_title and "]" in window_title:
             return False
-        return True
+        return window_title.strip().lower() == "login"

@@ -26,6 +26,7 @@ class CredentialManager:
             if kb.is_available():
                 self._backends.append(kb)
                 self._keyring = kb
+                kb.migrate_from_secretstorage()
             else:
                 log.warning("System keyring not available, skipping keyring backend")
 

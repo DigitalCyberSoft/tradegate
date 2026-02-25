@@ -66,7 +66,7 @@ class PyAutoGUIInput:
         if self._pag is None:
             import pyautogui
             pyautogui.FAILSAFE = True
-            pyautogui.PAUSE = 0.03
+            pyautogui.PAUSE = 0.01
             self._pag = pyautogui
         return self._pag
 
@@ -119,23 +119,23 @@ class PyAutoGUIInput:
             elif i == 0:
                 # Navigate to the first field
                 pag.press("tab")
-                time.sleep(0.1)
+                time.sleep(0.05)
                 pag.hotkey("shift", "tab")
-                time.sleep(0.1)
+                time.sleep(0.05)
             else:
                 pag.press("tab")
-                time.sleep(0.2)
+                time.sleep(0.1)
 
             # Clear existing content and type
             pag.hotkey(_MOD_KEY, "a")
-            time.sleep(0.05)
+            time.sleep(0.02)
             pag.press("backspace")
-            time.sleep(0.05)
+            time.sleep(0.02)
 
             if not self._type_text(value):
                 log.warning("Failed to type into field %r", field_name)
                 return False
-            time.sleep(0.1)
+            time.sleep(0.05)
 
         if auto_submit:
             time.sleep(0.2)
@@ -146,23 +146,23 @@ class PyAutoGUIInput:
     def _type_text(self, value: str) -> bool:
         """Type *value* into the currently focused field.
 
-        Uses ``typewrite()`` for pure-ASCII strings.  For anything else
-        (or if typewrite fails) falls back to a clipboard-paste via
-        platform-native copy tools + Ctrl/Cmd-V.
+        Prefers clipboard paste (instant) over per-character typewrite.
+        Falls back to ``typewrite()`` for ASCII text if clipboard paste fails.
         """
         pag = self._get_pag()
 
+        # Clipboard paste — fast for any text, required for non-ASCII
+        if _clipboard_paste(value):
+            pag.hotkey(_MOD_KEY, "v")
+            return True
+
+        # Fallback: per-character typing (ASCII only)
         if value.isascii():
             try:
                 pag.typewrite(value, interval=self._typing_interval)
                 return True
             except Exception:
-                log.debug("typewrite() failed, falling back to clipboard paste")
+                log.debug("typewrite() also failed")
 
-        # Non-ASCII or typewrite failure — use clipboard paste
-        if _clipboard_paste(value):
-            pag.hotkey(_MOD_KEY, "v")
-            return True
-
-        log.warning("Could not type text: typewrite and clipboard paste both failed")
+        log.warning("Could not type text: clipboard paste and typewrite both failed")
         return False

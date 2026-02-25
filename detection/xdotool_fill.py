@@ -63,22 +63,22 @@ class XdotoolInput:
             elif i == 0:
                 # Ensure we're on the first field
                 self._send_key("Tab")
-                time.sleep(0.1)
+                time.sleep(0.05)
                 self._send_key("shift+Tab")
-                time.sleep(0.1)
+                time.sleep(0.05)
             else:
                 self._send_key("Tab")
-                time.sleep(0.2)
+                time.sleep(0.1)
 
             # Clear existing content and type
             self._send_key("ctrl+a")
-            time.sleep(0.05)
+            time.sleep(0.02)
             self._send_key("Delete")
-            time.sleep(0.05)
+            time.sleep(0.02)
             if not self._type_text(value):
                 log.warning("Failed to type into field %r", field_name)
                 return False
-            time.sleep(0.1)
+            time.sleep(0.05)
 
         if auto_submit:
             if expected_wid is not None and not self._verify_active_window(expected_wid):
@@ -107,6 +107,17 @@ class XdotoolInput:
         return self._run_xdotool(["key", key])
 
     def _type_text(self, text: str) -> bool:
+        """Type *text* into the currently focused field.
+
+        Prefers clipboard paste via xclip + Ctrl+V (instant).
+        Falls back to xdotool type if clipboard tools are unavailable.
+        """
+        # Clipboard paste — fast for any text
+        if self._clipboard_paste(text):
+            self._send_key("ctrl+v")
+            return True
+
+        # Fallback: per-character xdotool type
         cmd = ["xdotool", "type", "--delay", str(self._typing_delay), "--clearmodifiers", "--file", "-"]
         try:
             result = subprocess.run(cmd, input=text.encode(), capture_output=True, timeout=10)
@@ -117,6 +128,22 @@ class XdotoolInput:
         except (subprocess.SubprocessError, FileNotFoundError) as e:
             log.warning("xdotool type error: %s", e)
             return False
+
+    @staticmethod
+    def _clipboard_paste(value: str) -> bool:
+        """Copy *value* to the X11 clipboard using xclip or xsel."""
+        for cmd in (["xclip", "-selection", "clipboard"],
+                    ["xsel", "--clipboard", "--input"]):
+            try:
+                subprocess.run(
+                    cmd, input=value.encode("utf-8"),
+                    check=True, timeout=5, capture_output=True,
+                )
+                return True
+            except (FileNotFoundError, subprocess.SubprocessError):
+                continue
+        log.debug("No clipboard tool available (tried xclip, xsel)")
+        return False
 
     def _run_xdotool(self, args: list[str]) -> bool:
         cmd = ["xdotool"] + args
