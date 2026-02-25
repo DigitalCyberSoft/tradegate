@@ -1,104 +1,121 @@
-"""Credential backend using gnome-keyring via secretstorage (D-Bus Secret Service)."""
+"""Credential backend using the cross-platform keyring library.
+
+Uses the system keyring (macOS Keychain, Windows Credential Locker,
+or SecretService/gnome-keyring on Linux).
+"""
 
 from __future__ import annotations
 
+import json
 import logging
 
 from tradegate.credentials.base import Account, CredentialBackend
 
 log = logging.getLogger(__name__)
 
-ATTR_APP = "application"
-ATTR_PLATFORM = "platform"
-ATTR_USERNAME = "username"
-ATTR_LABEL = "label"
-APP_NAME = "tradegate"
+SERVICE_NAME = "tradegate"
+# Keyring entry that stores the JSON index of all accounts
+_INDEX_USERNAME = "__tradegate_account_index__"
 
 
 class KeyringBackend(CredentialBackend):
-    """Store credentials in gnome-keyring via D-Bus Secret Service API."""
+    """Store credentials in the OS keyring via the ``keyring`` library."""
 
     name = "keyring"
 
     def __init__(self) -> None:
-        self._connection = None
-        self._collection = None
+        self._kr = None
 
-    def _connect(self):
-        """Lazily connect to D-Bus and open the default collection."""
-        if self._connection is not None:
-            return
-
-        import secretstorage
-
-        self._connection = secretstorage.dbus_init()
-        self._collection = secretstorage.get_default_collection(self._connection)
-
-        if self._collection.is_locked():
-            self._collection.unlock()
+    def _get_keyring(self):
+        if self._kr is None:
+            import keyring
+            self._kr = keyring
+        return self._kr
 
     def is_available(self) -> bool:
         try:
-            self._connect()
-            return True
+            kr = self._get_keyring()
+            # Verify a usable backend is present (not the fail backend)
+            backend = kr.get_keyring()
+            return not type(backend).__name__.endswith("Fail")
         except Exception:
-            log.debug("gnome-keyring not available", exc_info=True)
+            log.debug("keyring not available", exc_info=True)
             return False
 
-    def list_accounts(self, platform: str | None = None) -> list[Account]:
-        self._connect()
-        attrs = {ATTR_APP: APP_NAME}
-        if platform:
-            attrs[ATTR_PLATFORM] = platform
+    def _load_index(self) -> dict[str, dict]:
+        """Load the account index from the keyring.
 
+        The index maps ``"platform:username"`` to ``{"platform", "username", "label"}``.
+        """
+        kr = self._get_keyring()
+        raw = kr.get_password(SERVICE_NAME, _INDEX_USERNAME)
+        if raw:
+            try:
+                return json.loads(raw)
+            except (json.JSONDecodeError, TypeError):
+                log.warning("Corrupt keyring account index, resetting")
+        return {}
+
+    def _save_index(self, index: dict[str, dict]) -> None:
+        kr = self._get_keyring()
+        kr.set_password(SERVICE_NAME, _INDEX_USERNAME, json.dumps(index))
+
+    @staticmethod
+    def _key(platform: str, username: str) -> str:
+        return f"{platform}:{username}"
+
+    def list_accounts(self, platform: str | None = None) -> list[Account]:
+        index = self._load_index()
         accounts = []
-        for item in self._collection.search_items(attrs):
-            item_attrs = item.get_attributes()
+        for info in index.values():
+            if platform and info.get("platform") != platform:
+                continue
             accounts.append(
                 Account(
-                    platform=item_attrs.get(ATTR_PLATFORM, ""),
-                    username=item_attrs.get(ATTR_USERNAME, ""),
-                    label=item_attrs.get(ATTR_LABEL, ""),
+                    platform=info["platform"],
+                    username=info["username"],
+                    label=info.get("label", ""),
                     backend=self.name,
                 )
             )
         return accounts
 
     def get_password(self, platform: str, username: str) -> str | None:
-        self._connect()
-        attrs = {ATTR_APP: APP_NAME, ATTR_PLATFORM: platform, ATTR_USERNAME: username}
-
-        for item in self._collection.search_items(attrs):
-            secret = item.get_secret()
-            if secret:
-                return secret.decode("utf-8")
-        return None
+        kr = self._get_keyring()
+        return kr.get_password(SERVICE_NAME, self._key(platform, username))
 
     def store_account(
         self, platform: str, username: str, password: str, label: str = ""
     ) -> None:
-        self._connect()
-        attrs = {
-            ATTR_APP: APP_NAME,
-            ATTR_PLATFORM: platform,
-            ATTR_USERNAME: username,
-            ATTR_LABEL: label,
+        kr = self._get_keyring()
+        key = self._key(platform, username)
+
+        # Store the password
+        kr.set_password(SERVICE_NAME, key, password)
+
+        # Update the account index
+        index = self._load_index()
+        index[key] = {
+            "platform": platform,
+            "username": username,
+            "label": label,
         }
-
-        # Delete existing entry first to avoid duplicates
-        self.delete_account(platform, username)
-
-        item_label = f"tradegate: {platform}/{username}"
-        if label:
-            item_label = f"tradegate: {label} ({platform}/{username})"
-
-        self._collection.create_item(item_label, attrs, password.encode("utf-8"))
+        self._save_index(index)
 
     def delete_account(self, platform: str, username: str) -> bool:
-        self._connect()
-        attrs = {ATTR_APP: APP_NAME, ATTR_PLATFORM: platform, ATTR_USERNAME: username}
-        deleted = False
-        for item in self._collection.search_items(attrs):
-            item.delete()
-            deleted = True
-        return deleted
+        kr = self._get_keyring()
+        key = self._key(platform, username)
+
+        # Remove from index
+        index = self._load_index()
+        had_entry = key in index
+        index.pop(key, None)
+        self._save_index(index)
+
+        # Delete the password
+        try:
+            kr.delete_password(SERVICE_NAME, key)
+        except Exception:
+            pass
+
+        return had_entry

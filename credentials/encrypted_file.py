@@ -109,7 +109,8 @@ class EncryptedFileBackend(CredentialBackend):
             return
 
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        os.chmod(self._path.parent, 0o700)
+        if os.name != "nt":
+            os.chmod(self._path.parent, 0o700)
 
         # Generate new salt each save
         salt = os.urandom(SALT_SIZE)
@@ -119,12 +120,15 @@ class EncryptedFileBackend(CredentialBackend):
         plaintext = json.dumps(self._data).encode()
         token = f.encrypt(plaintext)
 
-        old_umask = os.umask(0o177)
+        if os.name != "nt":
+            old_umask = os.umask(0o177)
         try:
             self._path.write_bytes(salt + token)
         finally:
-            os.umask(old_umask)
-        os.chmod(self._path, 0o600)
+            if os.name != "nt":
+                os.umask(old_umask)
+        if os.name != "nt":
+            os.chmod(self._path, 0o600)
 
     def _account_key(self, platform: str, username: str) -> str:
         return f"{platform}:{username}"

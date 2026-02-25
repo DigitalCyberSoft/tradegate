@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+from tradegate.config import CONFIG_DIR
 from tradegate.credentials.base import Account, CredentialBackend
 from tradegate.credentials.keyring_backend import KeyringBackend
 from tradegate.credentials.encrypted_file import EncryptedFileBackend
@@ -26,11 +27,11 @@ class CredentialManager:
                 self._backends.append(kb)
                 self._keyring = kb
             else:
-                log.warning("gnome-keyring not available, skipping keyring backend")
+                log.warning("System keyring not available, skipping keyring backend")
 
         if backend_mode in ("encrypted_file", "both"):
             path = encrypted_file_path or str(
-                Path.home() / ".config" / "tradegate" / "credentials.enc"
+                CONFIG_DIR / "credentials.enc"
             )
             eb = EncryptedFileBackend(path)
             self._backends.append(eb)
@@ -40,7 +41,7 @@ class CredentialManager:
         if not self._backends:
             log.warning("No backends available, falling back to encrypted file")
             path = encrypted_file_path or str(
-                Path.home() / ".config" / "tradegate" / "credentials.enc"
+                CONFIG_DIR / "credentials.enc"
             )
             eb = EncryptedFileBackend(path)
             self._backends.append(eb)
@@ -115,7 +116,7 @@ class CredentialManager:
         if self._encrypted is not None:
             return self._encrypted
         path = encrypted_file_path or str(
-            Path.home() / ".config" / "tradegate" / "credentials.enc"
+            CONFIG_DIR / "credentials.enc"
         )
         eb = EncryptedFileBackend(path)
         self._backends.append(eb)

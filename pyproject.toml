@@ -8,10 +8,14 @@ version = "0.1.0"
 description = "Trading platform auto-login launcher"
 requires-python = ">=3.11"
 dependencies = [
-    "secretstorage>=3.3",
+    "keyring>=24.0",
     "cryptography>=41.0",
     "tomli_w>=1.0",
+    "pyautogui>=0.9.54",
 ]
+
+[project.optional-dependencies]
+windows = ["pywinauto>=0.6.8"]
 
 [project.scripts]
 tradegate = "tradegate.cli:main"
