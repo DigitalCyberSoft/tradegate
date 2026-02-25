@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -13,11 +14,38 @@ from tradegate.config import load_config, get_platform_config
 from tradegate.credentials.manager import CredentialManager
 from tradegate.platforms.base import PlatformConfig
 from tradegate.platforms.registry import get_plugin
-from tradegate.detection.window import WindowDetector
-from tradegate.detection.atspi_fill import AtspiInspector
-from tradegate.detection.xdotool_fill import XdotoolInput
+from tradegate.detection.window import create_window_detector
 
 log = logging.getLogger(__name__)
+
+
+def _take_screenshot(wid: int, path: str) -> bool:
+    """Capture a screenshot of the given window to *path*.
+
+    On Linux, tries ImageMagick ``import`` first (window-specific capture),
+    then falls back to pyautogui (full-screen capture).
+    On macOS/Windows, uses pyautogui directly.
+    """
+    if sys.platform == "linux":
+        try:
+            result = subprocess.run(
+                ["import", "-window", str(wid), path],
+                capture_output=True, timeout=10,
+            )
+            if result.returncode == 0:
+                return True
+        except (subprocess.SubprocessError, FileNotFoundError):
+            log.debug("ImageMagick import not available, trying pyautogui")
+
+    # All platforms: pyautogui full-screen capture fallback
+    try:
+        import pyautogui
+        screenshot = pyautogui.screenshot()
+        screenshot.save(path)
+        return True
+    except Exception as e:
+        log.debug("pyautogui screenshot failed: %s", e)
+        return False
 
 
 def _is_username_prefilled(username: str, wid: int) -> bool:
@@ -28,13 +56,10 @@ def _is_username_prefilled(username: str, wid: int) -> bool:
     """
     fd, path = tempfile.mkstemp(suffix=".png")
     os.close(fd)
-    os.chmod(path, 0o600)
+    if os.name != "nt":
+        os.chmod(path, 0o600)
     try:
-        result = subprocess.run(
-            ["import", "-window", str(wid), path],
-            capture_output=True, timeout=10,
-        )
-        if result.returncode != 0:
+        if not _take_screenshot(wid, path):
             return False
         ocr = subprocess.run(
             ["tesseract", path, "stdout", "--psm", "6"],
@@ -43,7 +68,6 @@ def _is_username_prefilled(username: str, wid: int) -> bool:
         text = ocr.stdout.lower()
         log.info("OCR text snippet: %r", text[:200])
         # Find text between "username" and "password" labels
-        import re
         m = re.search(r"username\s*\n(.*?)password", text, re.DOTALL)
         if m:
             between = m.group(1)
@@ -64,67 +88,26 @@ def _is_username_prefilled(username: str, wid: int) -> bool:
             pass
 
 
-def _find_window_by_title(title: str, exclude: set[int] | None = None) -> int | None:
-    """Find a window whose name exactly matches *title*, skipping IDs in *exclude*."""
-    exclude = exclude or set()
-    try:
-        result = subprocess.run(
-            ["xdotool", "search", "--name", title],
-            capture_output=True, text=True, timeout=5,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            for line in result.stdout.strip().splitlines():
-                wid = int(line)
-                if wid in exclude:
-                    continue
-                # xdotool --name is a substring match; verify title ends with marker
-                check = subprocess.run(
-                    ["xdotool", "getwindowname", str(wid)],
-                    capture_output=True, text=True, timeout=5,
-                )
-                if check.returncode == 0 and check.stdout.strip().endswith(title):
-                    return wid
-    except (subprocess.SubprocessError, FileNotFoundError, ValueError):
-        pass
-    return None
+def _get_input_strategy(strategy: str):
+    """Return an input handler based on the configured strategy.
 
+    Strategies: "auto", "atspi", "xdotool", "pyautogui".
+    """
+    if strategy == "atspi":
+        from tradegate.detection.atspi_fill import AtspiInspector
+        return AtspiInspector()
 
-def _wait_for_login_screen(
-    timeout: int = 120,
-    marker: str = "Login",
-    exclude: set[int] | None = None,
-) -> int | None:
-    """Poll for a window titled *marker*, activate it when found. Returns wid or None."""
-    deadline = time.monotonic() + timeout
-    log.info("Waiting for login screen (marker=%r, timeout=%ds)", marker, timeout)
-    while time.monotonic() < deadline:
-        wid = _find_window_by_title(marker, exclude=exclude)
-        if wid is not None:
-            log.info("Login screen detected (wid=%d), activating...", wid)
-            try:
-                subprocess.run(
-                    ["xdotool", "windowactivate", str(wid)],
-                    capture_output=True, timeout=5,
-                )
-                time.sleep(0.3)
-                subprocess.run(
-                    ["xdotool", "windowfocus", str(wid)],
-                    capture_output=True, timeout=5,
-                )
-            except subprocess.TimeoutExpired:
-                log.warning("Timed out focusing window %d, continuing anyway", wid)
-            return wid
-        try:
-            active_title = subprocess.run(
-                ["xdotool", "getactivewindow", "getwindowname"],
-                capture_output=True, text=True, timeout=5,
-            ).stdout.strip()
-        except (subprocess.SubprocessError, FileNotFoundError):
-            active_title = ""
-        log.info("Active window: %r, waiting...", active_title)
-        time.sleep(0.5)
-    log.warning("Login screen not detected within %ds", timeout)
-    return None
+    if strategy == "xdotool":
+        from tradegate.detection.xdotool_fill import XdotoolInput
+        return XdotoolInput()
+
+    if strategy == "pyautogui":
+        from tradegate.detection.pyautogui_fill import PyAutoGUIInput
+        return PyAutoGUIInput()
+
+    # "auto" — pyautogui on all platforms
+    from tradegate.detection.pyautogui_fill import PyAutoGUIInput
+    return PyAutoGUIInput()
 
 
 def launch_with_account(platform_name: str, account, cred_mgr: CredentialManager, no_submit: bool = False) -> int:
@@ -144,9 +127,10 @@ def launch_with_account(platform_name: str, account, cred_mgr: CredentialManager
     plat_cfg = PlatformConfig.from_dict(platform_name, plat_cfg_dict)
 
     if not plat_cfg.binary:
+        from tradegate.config import CONFIG_PATH
         print(
             f"Error: no binary configured for '{platform_name}'. "
-            f"Edit ~/.config/tradegate/config.toml to set the binary path.",
+            f"Edit {CONFIG_PATH} to set the binary path.",
             file=sys.stderr,
         )
         return 1
@@ -172,34 +156,19 @@ def launch_with_account(platform_name: str, account, cred_mgr: CredentialManager
     # Determine the login window marker from title_pattern
     marker = plat_cfg.title_pattern or "Login"
 
+    # Create platform-appropriate window detector
+    detector = create_window_detector()
+
     # Check if a login window is already open — if so, reuse it
-    login_wid = _find_window_by_title(marker)
+    login_wid = detector.find_window_by_title(marker)
     if login_wid is not None:
         log.info("Existing login window found (wid=%d), reusing it.", login_wid)
-        try:
-            subprocess.run(
-                ["xdotool", "windowactivate", str(login_wid)],
-                capture_output=True, timeout=5,
-            )
-            time.sleep(0.3)
-            subprocess.run(
-                ["xdotool", "windowfocus", str(login_wid)],
-                capture_output=True, timeout=5,
-            )
-        except subprocess.TimeoutExpired:
-            log.warning("Timed out focusing existing window, continuing anyway")
+        detector.activate_window(login_wid)
+        time.sleep(0.3)
+        detector.focus_window(login_wid)
     else:
         # Snapshot existing windows matching the marker so we only match the new one
-        existing_login = set()
-        try:
-            result = subprocess.run(
-                ["xdotool", "search", "--name", marker],
-                capture_output=True, text=True, timeout=5,
-            )
-            if result.returncode == 0 and result.stdout.strip():
-                existing_login = {int(l) for l in result.stdout.strip().splitlines()}
-        except (subprocess.SubprocessError, FileNotFoundError, ValueError):
-            pass
+        existing_login = detector.find_windows(title=marker)
 
         log.info("Launching: %s", " ".join(cmd))
         try:
@@ -209,7 +178,7 @@ def launch_with_account(platform_name: str, account, cred_mgr: CredentialManager
             return 1
 
         # Wait for the new login screen
-        login_wid = _wait_for_login_screen(timeout=plat_cfg.window_timeout, marker=marker, exclude=existing_login)
+        login_wid = _wait_for_login_screen(detector, timeout=plat_cfg.window_timeout, marker=marker, exclude=existing_login)
         if login_wid is None:
             print(
                 f"Error: timed out waiting for {platform_name} login screen "
@@ -226,17 +195,29 @@ def launch_with_account(platform_name: str, account, cred_mgr: CredentialManager
     if username_prefilled:
         log.info("Username %r already pre-filled, skipping to password.", account.username)
 
-    # Fill login form via keyboard input
+    # Fill login form via the configured input strategy
     auto_submit = general.get("auto_submit", False) and not no_submit
-    xdot = XdotoolInput()
-    filled = xdot.fill_login_form(
-        username=account.username,
-        password=password,
-        field_order=plat_cfg.field_order,
-        auto_submit=auto_submit,
-        username_prefilled=username_prefilled,
-        expected_wid=login_wid,
-    )
+    input_handler = _get_input_strategy(plat_cfg.input_strategy)
+
+    # AT-SPI has a different call signature
+    from tradegate.detection.atspi_fill import AtspiInspector
+    if isinstance(input_handler, AtspiInspector):
+        filled = input_handler.fill_login_form(
+            app_name=plat_cfg.wm_class,
+            username=account.username,
+            password=password,
+            field_order=plat_cfg.field_order,
+            auto_submit=auto_submit,
+        )
+    else:
+        filled = input_handler.fill_login_form(
+            username=account.username,
+            password=password,
+            field_order=plat_cfg.field_order,
+            auto_submit=auto_submit,
+            username_prefilled=username_prefilled,
+            expected_wid=login_wid,
+        )
     del password
 
     if filled:
@@ -249,6 +230,30 @@ def launch_with_account(platform_name: str, account, cred_mgr: CredentialManager
             file=sys.stderr,
         )
         return 1
+
+
+def _wait_for_login_screen(
+    detector,
+    timeout: int = 120,
+    marker: str = "Login",
+    exclude: set[int] | None = None,
+) -> int | None:
+    """Poll for a window titled *marker*, activate it when found. Returns wid or None."""
+    deadline = time.monotonic() + timeout
+    log.info("Waiting for login screen (marker=%r, timeout=%ds)", marker, timeout)
+    while time.monotonic() < deadline:
+        wid = detector.find_window_by_title(marker, exclude=exclude)
+        if wid is not None:
+            log.info("Login screen detected (wid=%d), activating...", wid)
+            detector.activate_window(wid)
+            time.sleep(0.3)
+            detector.focus_window(wid)
+            return wid
+        active_title = detector.get_active_window_title()
+        log.info("Active window: %r, waiting...", active_title)
+        time.sleep(0.5)
+    log.warning("Login screen not detected within %ds", timeout)
+    return None
 
 
 def launch_and_login(platform_name: str, no_submit: bool = False) -> int:
@@ -304,6 +309,8 @@ def launch_and_login(platform_name: str, no_submit: bool = False) -> int:
 
 def inspect_platform(platform_name: str) -> int:
     """Launch platform and dump AT-SPI tree for debugging."""
+    from tradegate.detection.atspi_fill import AtspiInspector
+
     if not AtspiInspector.is_available():
         print(
             "AT-SPI is not available on this system.\n"

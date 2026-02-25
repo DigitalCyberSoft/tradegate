@@ -3,20 +3,32 @@
 from __future__ import annotations
 
 import os
+import sys
 import tomllib
 from pathlib import Path
 from typing import Any
 
 import tomli_w
 
-CONFIG_DIR = Path.home() / ".config" / "tradegate"
+
+def _get_config_dir() -> Path:
+    """Return the platform-appropriate config directory."""
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "tradegate"
+    elif sys.platform == "win32":
+        return Path(os.environ.get("APPDATA", str(Path.home()))) / "tradegate"
+    else:
+        return Path.home() / ".config" / "tradegate"
+
+
+CONFIG_DIR = _get_config_dir()
 CONFIG_PATH = CONFIG_DIR / "config.toml"
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "general": {
         "credential_backend": "keyring",  # "keyring", "encrypted_file", or "both"
         "encrypted_file_path": str(CONFIG_DIR / "credentials.enc"),
-        "input_strategy": "auto",  # "auto", "atspi", "xdotool"
+        "input_strategy": "auto",  # "auto" (pyautogui), "atspi", "xdotool", "pyautogui"
         "auto_submit": False,
     },
     "platforms": {
@@ -68,14 +80,17 @@ def load_config() -> dict[str, Any]:
 def save_config(cfg: dict[str, Any]) -> None:
     """Write config to disk."""
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    os.chmod(CONFIG_DIR, 0o700)
-    old_umask = os.umask(0o177)
+    if os.name != "nt":
+        os.chmod(CONFIG_DIR, 0o700)
+        old_umask = os.umask(0o177)
     try:
         with open(CONFIG_PATH, "wb") as f:
             tomli_w.dump(cfg, f)
     finally:
-        os.umask(old_umask)
-    os.chmod(CONFIG_PATH, 0o600)
+        if os.name != "nt":
+            os.umask(old_umask)
+    if os.name != "nt":
+        os.chmod(CONFIG_PATH, 0o600)
 
 
 def get_platform_config(cfg: dict[str, Any], platform: str) -> dict[str, Any]:
