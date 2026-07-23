@@ -168,8 +168,18 @@ def _get_input_strategy(strategy: str):
     return PyAutoGUIInput()
 
 
-def launch_with_account(platform_name: str, account, cred_mgr: CredentialManager, no_submit: bool = False) -> int:
+def launch_with_account(
+    platform_name: str,
+    account,
+    cred_mgr: CredentialManager,
+    no_submit: bool = False,
+    prev_active: int | None = None,
+) -> int:
     """Launch platform and auto-fill login for an already-selected account.
+
+    *prev_active* is the window the user was in before any tradegate UI
+    opened; pass it when a picker dialog ran first, because capturing the
+    active window after a dialog closes races the WM's refocus.
 
     Returns 0 on success, non-zero on failure.
     """
@@ -217,6 +227,11 @@ def launch_with_account(platform_name: str, account, cred_mgr: CredentialManager
 
     # Create platform-appropriate window detector
     detector = create_window_detector()
+
+    # Remember where the user was so the focus watchdog can hand focus
+    # back after login (restore_focus).
+    if prev_active is None:
+        prev_active = detector.get_active_window()
 
     # Check if a login window is already open — if so, reuse it
     login_wid = _find_login_window(detector, marker, wm_class, plugin)
@@ -290,6 +305,7 @@ def launch_with_account(platform_name: str, account, cred_mgr: CredentialManager
 
     if filled:
         print(f"Login form filled for {account.display_name} on {platform_name}.")
+        _restore_focus_after_login(detector, plugin, plat_cfg, prev_active=prev_active)
         return 0
     else:
         print(
@@ -298,6 +314,40 @@ def launch_with_account(platform_name: str, account, cred_mgr: CredentialManager
             file=sys.stderr,
         )
         return 1
+
+
+def _restore_focus_after_login(detector, plugin, plat_cfg, prev_active):
+    """Run the focus watchdog: revert WM-side focus grabs to the platform.
+
+    The focus shield blocks the app's own focus grabs, but the WM can hand
+    a platform window focus on its own (focus succession, activation), at
+    any point in the session — not just during launch. The watchdog reverts
+    those unless real user input (a click, or alt/super/tab) preceded the
+    change. See tradegate.detection.focus_watch for the policy.
+    """
+    if not plat_cfg.restore_focus:
+        return
+    if not plat_cfg.wm_class:
+        return
+    if sys.platform != "linux":
+        return
+
+    from tradegate.detection.focus_watch import FocusWatchdog, WATCH_LOG_PATH
+
+    scope = plat_cfg.restore_focus_scope
+    print(
+        f"Focus watchdog running (scope={scope}, log={WATCH_LOG_PATH}). "
+        f"Login is done — Ctrl-C only stops the watchdog."
+    )
+    watchdog = FocusWatchdog(
+        wm_class=plat_cfg.wm_class,
+        activate_fn=detector.activate_window,
+        find_platform_windows=lambda: detector.find_windows(wm_class=plat_cfg.wm_class),
+        is_login_title=plugin.is_login_screen,
+        scope=scope,
+        launch_timeout=plat_cfg.window_timeout + 30,
+    )
+    watchdog.run(seed_prev_active=prev_active)
 
 
 def _find_login_window(detector, marker, wm_class, plugin, exclude=None):
@@ -390,7 +440,10 @@ def launch_and_login(platform_name: str, no_submit: bool = False) -> int:
         )
         return 1
 
-    # 4. Pick account (GTK dialog or auto-select)
+    # 4. Pick account (GTK dialog or auto-select). Capture the user's
+    # window first — the picker takes focus and its close races the WM.
+    prev_active = create_window_detector().get_active_window()
+
     from tradegate.ui.account_picker import pick_account
 
     account = pick_account(accounts, platform_name, cred_manager=cred_mgr)
@@ -399,7 +452,9 @@ def launch_and_login(platform_name: str, no_submit: bool = False) -> int:
         return 1
 
     # 5-9. Launch and fill login
-    return launch_with_account(platform_name, account, cred_mgr, no_submit=no_submit)
+    return launch_with_account(
+        platform_name, account, cred_mgr, no_submit=no_submit, prev_active=prev_active,
+    )
 
 
 def inspect_platform(platform_name: str) -> int:

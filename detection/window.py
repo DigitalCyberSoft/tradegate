@@ -96,6 +96,10 @@ class WindowDetector:
         """Return the title of the currently active window."""
         return ""
 
+    def get_active_window(self) -> int | None:
+        """Return the ID of the currently active window, or None if unknown."""
+        return None
+
     def _search_all(
         self, *, wm_class: str = "", title: str = "", pid: int | None = None
     ) -> list[int]:
@@ -121,11 +125,13 @@ class XdotoolWindowDetector(WindowDetector):
 
     def activate_window(self, wid: int) -> bool:
         try:
-            subprocess.run(
+            result = subprocess.run(
                 ["xdotool", "windowactivate", str(wid)],
                 capture_output=True, timeout=5,
             )
-            return True
+            # xdotool exits non-zero for dead/invalid windows; report that
+            # instead of claiming success.
+            return result.returncode == 0
         except (subprocess.SubprocessError, FileNotFoundError):
             return False
 
@@ -159,6 +165,18 @@ class XdotoolWindowDetector(WindowDetector):
             return result.stdout.strip()
         except (subprocess.SubprocessError, FileNotFoundError):
             return ""
+
+    def get_active_window(self) -> int | None:
+        try:
+            result = subprocess.run(
+                ["xdotool", "getactivewindow"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.returncode != 0 or not result.stdout.strip():
+                return None
+            return int(result.stdout.strip())
+        except (subprocess.SubprocessError, FileNotFoundError, ValueError):
+            return None
 
     def _search_all(
         self, *, wm_class: str = "", title: str = "", pid: int | None = None

@@ -44,6 +44,7 @@
         <button class="primary" id="btn-add">+ Add</button>
         <button class="secondary" id="btn-edit">Edit</button>
         <button class="danger" id="btn-delete">Delete</button>
+        <button class="secondary" id="btn-settings" title="Tradegate settings">&#9881; Settings</button>
       </div>
       <div class="button-group">
         <label class="toggle-label" title="When off, credentials are filled but Enter is not pressed">
@@ -115,6 +116,10 @@
       window.tradegate.sendResult({ action: "add" });
     }
 
+    function doSettings() {
+      window.tradegate.sendResult({ action: "settings" });
+    }
+
     function scrollSelectedIntoView() {
       const row = document.querySelector(`tr[data-index="${selectedIndex}"]`);
       if (row) row.scrollIntoView({ block: "nearest" });
@@ -128,6 +133,7 @@
     document.getElementById("chk-auto-submit").addEventListener("change", updateWarning);
     document.getElementById("btn-login").addEventListener("click", doLogin);
     document.getElementById("btn-add").addEventListener("click", doAdd);
+    document.getElementById("btn-settings").addEventListener("click", doSettings);
     document.getElementById("btn-edit").addEventListener("click", doEdit);
     document.getElementById("btn-delete").addEventListener("click", doDelete);
     document.getElementById("btn-cancel").addEventListener("click", () => window.tradegate.cancel());

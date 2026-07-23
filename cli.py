@@ -53,6 +53,17 @@ def main(argv: list[str] | None = None) -> None:
     p_inspect = sub.add_parser("inspect", help="Dump AT-SPI tree for a platform (debug)")
     p_inspect.add_argument("platform", choices=list_platforms(), help="Platform name")
 
+    # watch
+    p_watch = sub.add_parser(
+        "watch",
+        help="Guard focus for an already-running platform (no login/launch)",
+    )
+    p_watch.add_argument("platform", choices=list_platforms(), help="Platform name")
+    p_watch.add_argument(
+        "--observe", action="store_true",
+        help="Log steals but do not revert focus (validation mode)",
+    )
+
     args = parser.parse_args(argv)
 
     if args.verbose:
@@ -76,6 +87,8 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(_cmd_manage(args))
     elif args.command == "inspect":
         sys.exit(_cmd_inspect(args))
+    elif args.command == "watch":
+        sys.exit(_cmd_watch(args))
 
 
 def _get_cred_manager() -> CredentialManager:
@@ -178,17 +191,71 @@ def _cmd_manage(args) -> int:
         print("Error: could not unlock credential store.", file=sys.stderr)
         return 1
 
+    from tradegate.detection.window import create_window_detector
     from tradegate.ui.account_picker import pick_account
+
+    # Capture the user's window before the picker takes focus.
+    prev_active = create_window_detector().get_active_window()
 
     platform = args.platform or ""
     accounts = mgr.list_accounts(platform or None)
     selected = pick_account(accounts, platform, cred_manager=mgr)
     if selected:
         from tradegate.orchestrator import launch_with_account
-        return launch_with_account(selected.platform, selected, mgr)
+        return launch_with_account(
+            selected.platform, selected, mgr, prev_active=prev_active,
+        )
     return 0
 
 
 def _cmd_inspect(args) -> int:
     from tradegate.orchestrator import inspect_platform
     return inspect_platform(args.platform)
+
+
+def _cmd_watch(args) -> int:
+    """Run the focus watchdog against an already-running platform."""
+    import sys as _sys
+
+    if _sys.platform != "linux":
+        print("watch is Linux/X11 only.", file=_sys.stderr)
+        return 1
+
+    from tradegate.config import get_platform_config, load_config
+    from tradegate.detection.focus_watch import WATCH_LOG_PATH, FocusWatchdog
+    from tradegate.detection.window import create_window_detector
+    from tradegate.platforms.base import PlatformConfig
+    from tradegate.platforms.registry import get_plugin
+
+    plugin = get_plugin(args.platform)
+    plat_cfg = PlatformConfig.from_dict(
+        args.platform, get_platform_config(load_config(), args.platform)
+    )
+    if not plat_cfg.wm_class:
+        print(f"No wm_class configured for '{args.platform}'.", file=_sys.stderr)
+        return 1
+
+    detector = create_window_detector()
+    if not detector.find_windows(wm_class=plat_cfg.wm_class):
+        print(
+            f"No running '{args.platform}' window (wm_class={plat_cfg.wm_class!r}). "
+            f"Start it first.",
+            file=_sys.stderr,
+        )
+        return 1
+
+    mode = "observe" if args.observe else "active"
+    print(
+        f"Watching {args.platform} focus ({mode} mode). "
+        f"Log: {WATCH_LOG_PATH}. Ctrl-C to stop."
+    )
+    watchdog = FocusWatchdog(
+        wm_class=plat_cfg.wm_class,
+        activate_fn=detector.activate_window,
+        find_platform_windows=lambda: detector.find_windows(wm_class=plat_cfg.wm_class),
+        is_login_title=plugin.is_login_screen,
+        scope="session",
+        observe=args.observe,
+    )
+    watchdog.run(seed_prev_active=detector.get_active_window())
+    return 0

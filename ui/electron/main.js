@@ -43,6 +43,7 @@ const dialogSizes = {
   "password-prompt": { width: 500, height: 300 },
   "confirm-delete":       { width: 480, height: 260 },
   "set-master-password":  { width: 500, height: 380 },
+  "settings":             { width: 540, height: 560 },
 };
 const size = dialogSizes[dialogType] || { width: 480, height: 360 };
 

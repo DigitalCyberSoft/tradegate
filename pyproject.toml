@@ -16,6 +16,9 @@ dependencies = [
 
 [project.optional-dependencies]
 windows = ["pywinauto>=0.6.8"]
+# Linux focus watchdog (restore_focus). Without it, restore_focus is a no-op
+# and logs that it is disabled; the LD_PRELOAD focus shield is unaffected.
+linux = ["python-xlib>=0.31"]
 
 [project.scripts]
 tradegate = "tradegate.cli:main"

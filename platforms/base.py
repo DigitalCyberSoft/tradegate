@@ -28,6 +28,9 @@ class PlatformConfig:
     login_ready_delay: float = 8
     field_order: list[str] = field(default_factory=lambda: ["username", "password"])
     input_strategy: str = "auto"
+    focus_shield: str = "off"  # "off", "log", or "enforce" (Linux/X11 only)
+    restore_focus: bool = False  # revert WM-side focus steals to the user's window
+    restore_focus_scope: str = "session"  # "session" (until platform exits) or "launch"
     extra: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -41,6 +44,9 @@ class PlatformConfig:
             login_ready_delay=d.get("login_ready_delay", 8),
             field_order=d.get("field_order", ["username", "password"]),
             input_strategy=d.get("input_strategy", "auto"),
+            focus_shield=d.get("focus_shield", "off"),
+            restore_focus=d.get("restore_focus", False),
+            restore_focus_scope=d.get("restore_focus_scope", "session"),
         )
 
 
@@ -48,6 +54,11 @@ class PlatformPlugin(ABC):
     """ABC for trading platform plugins."""
 
     name: str = ""
+    # Capability flags surfaced in the settings UI. A platform that doesn't
+    # implement the corresponding behavior keeps these False so the UI can
+    # disable the controls instead of offering settings that do nothing.
+    supports_focus_shield: bool = False
+    supports_restore_focus: bool = False
 
     @abstractmethod
     def get_default_config(self) -> dict[str, Any]:
@@ -68,3 +79,11 @@ class PlatformPlugin(ABC):
     def is_login_screen(self, window_title: str) -> bool:
         """Determine if the current window title indicates a login screen."""
         return True
+
+    def is_main_window(self, window_title: str) -> bool:
+        """Determine if the window title is the platform's main (post-login) window.
+
+        Used by restore_focus to know when login completed. Platforms that
+        don't implement this never trigger focus restoration.
+        """
+        return False

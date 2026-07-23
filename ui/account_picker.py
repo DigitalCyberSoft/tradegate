@@ -53,6 +53,13 @@ def pick_account(
 
         action = result.get("action", "login")
 
+        if action == "settings":
+            _handle_settings(platform)
+            # Settings may have changed auto_submit; reflect it in the picker.
+            cfg = load_config()
+            auto_submit = cfg.get("general", {}).get("auto_submit", False)
+            continue
+
         if action == "add":
             if cred_manager is not None:
                 if _handle_add(cred_manager, platform):
@@ -87,6 +94,50 @@ def pick_account(
         elif action == "edit":
             if _handle_edit(cred_manager, selected, platform):
                 accounts = cred_manager.list_accounts(platform or None)
+
+
+def _handle_settings(platform: str) -> bool:
+    """Show the settings dialog and persist changes. Returns True if saved."""
+    from tradegate.platforms.registry import get_plugin, list_platforms
+
+    cfg = load_config()
+    general = cfg.get("general", {})
+
+    plats: dict[str, dict] = {}
+    for name in list_platforms():
+        plugin = get_plugin(name)
+        pc = cfg.get("platforms", {}).get(name, {})
+        plats[name] = {
+            "focus_shield": pc.get("focus_shield", "off"),
+            "restore_focus": bool(pc.get("restore_focus", False)),
+            "supports_focus_shield": plugin.supports_focus_shield,
+            "supports_restore_focus": plugin.supports_restore_focus,
+        }
+
+    result = run_electron_dialog("settings", {
+        "platform": platform,
+        "platforms": plats,
+        "auto_submit": general.get("auto_submit", False),
+    })
+
+    if result is None or result.get("action") != "save":
+        return False
+
+    cfg.setdefault("general", {})["auto_submit"] = bool(result.get("auto_submit", False))
+    for name, vals in (result.get("platforms") or {}).items():
+        if name not in plats or not isinstance(vals, dict):
+            continue
+        pcfg = cfg.setdefault("platforms", {}).setdefault(name, {})
+        if plats[name]["supports_focus_shield"]:
+            shield = vals.get("focus_shield", "off")
+            if shield in ("off", "log", "enforce"):
+                pcfg["focus_shield"] = shield
+        if plats[name]["supports_restore_focus"]:
+            pcfg["restore_focus"] = bool(vals.get("restore_focus", False))
+
+    save_config(cfg)
+    log.info("Settings saved.")
+    return True
 
 
 def _handle_add(mgr: CredentialManager, platform: str) -> bool:

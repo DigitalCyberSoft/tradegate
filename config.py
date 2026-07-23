@@ -40,6 +40,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "login_ready_delay": 1,
             "field_order": ["username", "password"],
             "input_strategy": "",  # empty = use general setting
+            "focus_shield": "enforce",  # "off", "log", or "enforce" — see README
+            "restore_focus": False,  # optional watchdog fallback — see README
+            "restore_focus_scope": "session",  # "session" or "launch"
         },
         "tastytrade": {
             "binary": "/opt/tastytrade/bin/tastytrade",

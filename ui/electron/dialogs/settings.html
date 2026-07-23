@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <link rel="stylesheet" href="shared.css">
+  <title>Settings</title>
+  <style>
+    .field { margin-bottom: 16px; }
+    .field-note {
+      font-size: 12px; color: #6a6a88; margin-top: 4px;
+    }
+    select {
+      width: 100%; padding: 10px 12px;
+      background: #16213e; border: 1px solid #2a2a4a; border-radius: 4px;
+      color: #e0e0e0; font-size: 14px; outline: none;
+    }
+    select:focus { border-color: #533483; }
+    select:disabled, input:disabled { opacity: 0.4; cursor: not-allowed; }
+    .check-label {
+      display: flex; align-items: center; gap: 8px;
+      cursor: pointer; font-size: 13px; color: #e0e0e0;
+      margin-bottom: 0; user-select: none;
+    }
+    .check-label input { cursor: pointer; }
+    .section-title {
+      font-size: 12px; font-weight: 600; text-transform: uppercase;
+      letter-spacing: 0.5px; color: #a0a0b8;
+      margin: 12px 0 10px; padding-bottom: 6px;
+      border-bottom: 1px solid #2a2a4a;
+    }
+  </style>
+</head>
+<body>
+  <div class="titlebar">
+    <span class="titlebar-title">Settings</span>
+    <button class="titlebar-close" id="btn-close">&times;</button>
+  </div>
+  <div class="content">
+    <div class="section-title">General</div>
+    <div class="field">
+      <label class="check-label">
+        <input type="checkbox" id="chk-auto-submit">
+        <span>Auto-submit login form</span>
+      </label>
+      <div class="field-note">When off, credentials are filled but Enter is not pressed.</div>
+    </div>
+
+    <div class="section-title">Platform</div>
+    <div class="field">
+      <label for="sel-platform">Platform</label>
+      <select id="sel-platform"></select>
+    </div>
+    <div class="field">
+      <label for="sel-focus-shield">Focus shield</label>
+      <select id="sel-focus-shield">
+        <option value="off">Off — no protection</option>
+        <option value="log">Log — observe only, block nothing</option>
+        <option value="enforce">Enforce — block focus steals</option>
+      </select>
+      <div class="field-note" id="note-focus-shield">
+        Stops the platform from taking over your screen on launch and reconnect (Linux/X11).
+      </div>
+    </div>
+    <div class="field">
+      <label class="check-label">
+        <input type="checkbox" id="chk-restore-focus">
+        <span>Restore focus after login</span>
+      </label>
+      <div class="field-note" id="note-restore-focus">
+        Watches for the whole session and snaps focus back whenever the platform
+        grabs it without a click or Alt-Tab from you (Linux/X11, needs python-xlib).
+      </div>
+    </div>
+
+    <div class="button-row">
+      <button class="secondary" id="btn-cancel">Cancel</button>
+      <button class="primary" id="btn-save">Save</button>
+    </div>
+  </div>
+
+  <script>
+    const UNSUPPORTED = "Not supported for this platform.";
+    let platforms = {};   // name -> {focus_shield, restore_focus, supports_*}
+    let edits = {};       // name -> {focus_shield, restore_focus}
+    let current = null;
+    let defaultNotes = {};
+
+    function commitCurrent() {
+      if (current === null) return;
+      const p = platforms[current];
+      if (p.supports_focus_shield) {
+        edits[current].focus_shield = document.getElementById("sel-focus-shield").value;
+      }
+      if (p.supports_restore_focus) {
+        edits[current].restore_focus = document.getElementById("chk-restore-focus").checked;
+      }
+    }
+
+    function showPlatform(name) {
+      current = name;
+      const p = platforms[name];
+      const e = edits[name];
+
+      const shield = document.getElementById("sel-focus-shield");
+      shield.disabled = !p.supports_focus_shield;
+      shield.value = p.supports_focus_shield ? e.focus_shield : "off";
+      document.getElementById("note-focus-shield").textContent =
+        p.supports_focus_shield ? defaultNotes.shield : UNSUPPORTED;
+
+      const restore = document.getElementById("chk-restore-focus");
+      restore.disabled = !p.supports_restore_focus;
+      restore.checked = p.supports_restore_focus ? e.restore_focus : false;
+      document.getElementById("note-restore-focus").textContent =
+        p.supports_restore_focus ? defaultNotes.restore : UNSUPPORTED;
+    }
+
+    function doSave() {
+      commitCurrent();
+      window.tradegate.sendResult({
+        action: "save",
+        auto_submit: document.getElementById("chk-auto-submit").checked,
+        platforms: edits,
+      });
+    }
+
+    document.getElementById("sel-platform").addEventListener("change", (e) => {
+      commitCurrent();
+      showPlatform(e.target.value);
+    });
+    document.getElementById("btn-save").addEventListener("click", doSave);
+    document.getElementById("btn-cancel").addEventListener("click", () => window.tradegate.cancel());
+    document.getElementById("btn-close").addEventListener("click", () => window.tradegate.cancel());
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") { e.preventDefault(); window.tradegate.cancel(); }
+      else if (e.key === "Enter") { e.preventDefault(); doSave(); }
+    });
+
+    window.tradegate.onInitData((data) => {
+      defaultNotes = {
+        shield: document.getElementById("note-focus-shield").textContent,
+        restore: document.getElementById("note-restore-focus").textContent,
+      };
+      platforms = data.platforms || {};
+      document.getElementById("chk-auto-submit").checked = !!data.auto_submit;
+
+      const sel = document.getElementById("sel-platform");
+      sel.innerHTML = "";
+      for (const name of Object.keys(platforms)) {
+        edits[name] = {
+          focus_shield: platforms[name].focus_shield,
+          restore_focus: platforms[name].restore_focus,
+        };
+        const opt = document.createElement("option");
+        opt.value = name;
+        opt.textContent = name;
+        sel.appendChild(opt);
+      }
+      const initial = data.platform && platforms[data.platform]
+        ? data.platform : Object.keys(platforms)[0];
+      if (initial) {
+        sel.value = initial;
+        showPlatform(initial);
+      }
+    });
+  </script>
+</body>
+</html>
