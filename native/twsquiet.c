@@ -24,13 +24,23 @@
  *   4. XRaiseWindow / XMapRaised / XConfigureWindow(stack Above): how TWS
  *      "pulls to the front" on launch/reconnect. Gated on the same user-intent
  *      test; a self-initiated raise is dropped, and XMapRaised maps without
- *      raising. We do NOT try to force a freshly-mapped window to the back:
- *      app-side stacking control against AWT+Muffin proved unreliable (BELOW
- *      deadlocks activation and restacks unpredictably; a plain lower lands
- *      mid-stack; iconify fights AWT). So a window TWS maps on its own may
- *      still appear on top AT MAP; keeping focus and self-raise gated is what
- *      reliably stops the takeover. Off-map self-raise/refocus (reconnect,
- *      restart-while-mapped) is fully gated.
+ *      raising. Off-map self-raise/refocus (reconnect, restart-while-mapped)
+ *      is fully gated.
+ *
+ *   5. Deferred main-window lower. Muffin still places a newly-mapped normal
+ *      window's frame on top even when it denies it focus (user_time=0):
+ *      window_state_on_map() sets places_on_top=FALSE, but the "stack just
+ *      below focus" branch (muffin window.c:2604) does not fire for us, so the
+ *      window maps ON TOP yet UNFOCUSED. In-process XLowerWindow cannot fix it
+ *      (the client is reparented into a WM frame, so lowering the client is a
+ *      no-op on the frame order), and _NET_WM_STATE_BELOW traps the window in
+ *      the bottom layer (the user can no longer raise it). Instead the monitor
+ *      thread, once the main window is mapped and titled, sends one
+ *      _NET_RESTACK_WINDOW (detail=Below) to drop the frame to the bottom of
+ *      the NORMAL layer. Every self-raise is already blocked, so the lower
+ *      sticks; the window stays a normal window the user can raise. Scoped to
+ *      the main window by title so login/dialogs and user-opened (recent-input)
+ *      windows are untouched.
  *
  * Modes (TWSQUIET_MODE): "log" observes and logs decisions without blocking;
  * "enforce" blocks. Everything else disables the policy (interposers pass
@@ -261,6 +271,174 @@ static atomic_long g_last_switch_ms = 0;
 static atomic_int g_monitor_state = 0;  /* 0=starting, 1=active, 2=failed */
 static pthread_once_t g_monitor_once = PTHREAD_ONCE_INIT;
 
+/* ------------------------------------------------------------------ */
+/* Deferred main-window lower (intervention 5 in the file header)      */
+/* ------------------------------------------------------------------ */
+
+#define LOWER_QUEUE 64
+#define LOWER_TITLE_WAIT_MS 8000   /* give up matching a title after this */
+typedef struct { Window win; long enq_ms; } lower_entry;
+static lower_entry g_lower_q[LOWER_QUEUE];
+static int g_lower_count = 0;
+static pthread_mutex_t g_lower_lock = PTHREAD_MUTEX_INITIALIZER;
+static int g_wake_pipe[2] = { -1, -1 };
+
+/* Main-window "pin": TWS re-raises the main window during startup (it maximizes
+ * it, and Muffin raises on the _NET_WM_STATE change; blocking every raise vector
+ * is whack-a-mole). So after the initial lower we KEEP the window at the bottom
+ * for a bounded startup window, re-lowering it whenever it climbs, until the
+ * user brings it forward (intent) or the window elapses. Monitor thread only. */
+#define PIN_MS 20000
+static Window g_pin_win = 0;
+static long g_pin_until_ms = 0;
+static long g_last_relower_ms = 0;
+
+/* Defined below with the rest of the intent machinery; needed by process_pin(). */
+static int has_user_intent(Display *dpy, char *detail, size_t dlen, const char **why);
+
+/* Swallow async X errors on the monitor's OWN connection (e.g. XFetchName on a
+ * window that closed during the wait); chain everything else to whatever
+ * handler AWT installed. A stray BadWindow reaching Xlib's default handler
+ * would call exit() and kill TWS, so this containment is load-bearing. */
+static Display *g_mon_dpy = NULL;
+static XErrorHandler g_prev_xerror = NULL;
+static int mon_error_handler(Display *d, XErrorEvent *e) {
+    if (d == g_mon_dpy)
+        return 0;
+    if (g_prev_xerror)
+        return g_prev_xerror(d, e);
+    return 0;
+}
+
+static void wake_monitor(void) {
+    if (g_wake_pipe[1] >= 0) {
+        char b = 1;
+        ssize_t r = write(g_wake_pipe[1], &b, 1);
+        (void)r;
+    }
+}
+
+/* 1 = title contains the main-window marker; 0 = no title yet OR a different
+ * title. TWS sets/changes WM_NAME AFTER map and may show a placeholder first,
+ * so the caller keeps polling until this matches or times out; it MUST NOT
+ * give up on a single non-matching title. */
+static int title_matches_main(Display *mon, Window w) {
+    char *name = NULL;
+    if (!XFetchName(mon, w, &name) || !name)
+        return 0;
+    int match = strcasestr(name, "interactive brokers") != NULL;
+    XFree(name);
+    return match;
+}
+
+static void restack_below(Display *mon, Window w) {
+    static Atom net_restack = 0;
+    if (!net_restack)
+        net_restack = XInternAtom(mon, "_NET_RESTACK_WINDOW", False);
+    XEvent e = {0};
+    e.xclient.type = ClientMessage;
+    e.xclient.window = w;
+    e.xclient.message_type = net_restack;
+    e.xclient.format = 32;
+    e.xclient.data.l[0] = 2;   /* source indication: pager */
+    e.xclient.data.l[1] = 0;   /* sibling: None -> bottom of the layer */
+    e.xclient.data.l[2] = 1;   /* detail: Below */
+    XSendEvent(mon, DefaultRootWindow(mon), False,
+               SubstructureRedirectMask | SubstructureNotifyMask, &e);
+    XFlush(mon);
+}
+
+/* True if w is the bottom entry of _NET_CLIENT_LIST_STACKING (reads first item
+ * only). On this WM the normal layer reaches index 0, so this means our lower
+ * took effect and re-lowering would be a no-op. */
+static int window_is_lowest(Display *mon, Window w) {
+    static Atom prop = 0;
+    if (!prop)
+        prop = XInternAtom(mon, "_NET_CLIENT_LIST_STACKING", False);
+    Atom type; int fmt; unsigned long nitems, after; unsigned char *data = NULL;
+    int rc = XGetWindowProperty(mon, DefaultRootWindow(mon), prop, 0, 1, False, XA_WINDOW,
+                                &type, &fmt, &nitems, &after, &data);
+    int lowest = (rc == Success && data && nitems >= 1 && ((Window *)data)[0] == w);
+    if (data)
+        XFree(data);
+    return lowest;
+}
+
+static void lower_q_remove(Window w) {
+    pthread_mutex_lock(&g_lower_lock);
+    for (int i = 0; i < g_lower_count; i++) {
+        if (g_lower_q[i].win == w) {
+            g_lower_q[i] = g_lower_q[--g_lower_count];
+            break;
+        }
+    }
+    pthread_mutex_unlock(&g_lower_lock);
+}
+
+/* Runs on the monitor thread only; safe to call X on `mon`. */
+static void process_pending_lowers(Display *mon) {
+    lower_entry snap[LOWER_QUEUE];
+    int n;
+    pthread_mutex_lock(&g_lower_lock);
+    n = g_lower_count;
+    for (int i = 0; i < n; i++)
+        snap[i] = g_lower_q[i];
+    pthread_mutex_unlock(&g_lower_lock);
+
+    for (int i = 0; i < n; i++) {
+        Window w = snap[i].win;
+        if (title_matches_main(mon, w)) {
+            if (g_mode == MODE_ENFORCE) {
+                restack_below(mon, w);
+                g_pin_win = w;
+                g_pin_until_ms = now_ms() + PIN_MS;
+                g_last_relower_ms = now_ms();
+                logmsg("main window 0x%lx mapped → _NET_RESTACK_WINDOW below "
+                       "(open in back); pinned %dms", (unsigned long)w, PIN_MS);
+            } else {
+                logmsg("main window 0x%lx mapped → would restack below (log mode)",
+                       (unsigned long)w);
+            }
+            lower_q_remove(w);
+        } else if (now_ms() - snap[i].enq_ms > LOWER_TITLE_WAIT_MS) {
+            /* Never showed the main-window title within the window: a login
+             * screen, dialog, or other top-level. Leave it where it is. */
+            logmsg("window 0x%lx: no main-window title after %dms → not lowering",
+                   (unsigned long)w, LOWER_TITLE_WAIT_MS);
+            lower_q_remove(w);
+        }
+        /* else: keep polling; the title may still change to the main one */
+    }
+}
+
+/* Keep the pinned main window at the bottom during startup. Monitor thread only. */
+static void process_pin(Display *mon) {
+    if (!g_pin_win)
+        return;
+    if (now_ms() >= g_pin_until_ms) {
+        logmsg("main window 0x%lx unpinned (startup window elapsed)",
+               (unsigned long)g_pin_win);
+        g_pin_win = 0;
+        return;
+    }
+    char detail[96];
+    const char *why;
+    if (has_user_intent(mon, detail, sizeof detail, &why)) {
+        logmsg("main window 0x%lx unpinned (user brought it forward: %s)",
+               (unsigned long)g_pin_win, why);
+        g_pin_win = 0;
+        return;
+    }
+    if (now_ms() - g_last_relower_ms < 20)   /* rate-limit; also breaks any ping-pong */
+        return;
+    if (!window_is_lowest(mon, g_pin_win)) {
+        restack_below(mon, g_pin_win);
+        g_last_relower_ms = now_ms();
+        logmsg("main window 0x%lx re-lowered (raised during startup, no user intent)",
+               (unsigned long)g_pin_win);
+    }
+}
+
 
 static void *monitor_thread(void *arg) {
     (void)arg;
@@ -270,6 +448,8 @@ static void *monitor_thread(void *arg) {
         logmsg("input monitor: XOpenDisplay failed; degraded to WM_TAKE_FOCUS gate");
         return NULL;
     }
+    g_mon_dpy = dpy;
+    g_prev_xerror = XSetErrorHandler(mon_error_handler);
     int xi_op, xi_ev, xi_err;
     if (!XQueryExtension(dpy, "XInputExtension", &xi_op, &xi_ev, &xi_err)) {
         atomic_store(&g_monitor_state, 2);
@@ -291,6 +471,12 @@ static void *monitor_thread(void *arg) {
     XISetMask(mask, XI_RawKeyPress);
     XIEventMask em = { XIAllMasterDevices, sizeof(mask), mask };
     XISelectEvents(dpy, root, &em, 1);
+    /* Also watch root property changes so a climb of the pinned window is
+     * caught the instant Muffin restacks (via _NET_CLIENT_LIST_STACKING),
+     * rather than up to one poll interval later; this removes the map/maximize
+     * flash. */
+    XSelectInput(dpy, root, PropertyChangeMask);
+    Atom net_stack_atom = XInternAtom(dpy, "_NET_CLIENT_LIST_STACKING", False);
     XSync(dpy, False);
 
     KeyCode k_alt_l = XKeysymToKeycode(dpy, XK_Alt_L);
@@ -305,25 +491,68 @@ static void *monitor_thread(void *arg) {
     atomic_store(&g_monitor_state, 1);
     logmsg("input monitor: active (XI2 %d.%d)", major, minor);
 
+    /* Self-pipe so an enqueued lower wakes select() even when no X event is
+     * coming (unattended reconnect/restart: the user is not touching input). */
+    if (pipe(g_wake_pipe) == 0) {
+        fcntl(g_wake_pipe[0], F_SETFL, O_NONBLOCK);
+        fcntl(g_wake_pipe[1], F_SETFL, O_NONBLOCK);
+    }
+    int xfd = ConnectionNumber(dpy);
+    int pfd = g_wake_pipe[0];
+
     for (;;) {
-        XEvent xev;
-        XNextEvent(dpy, &xev);
-        if (xev.xcookie.type != GenericEvent || xev.xcookie.extension != xi_op)
-            continue;
-        if (!XGetEventData(dpy, &xev.xcookie))
-            continue;
-        int et = xev.xcookie.evtype;
-        if (et == XI_RawButtonPress) {
-            atomic_store(&g_last_click_ms, now_ms());
-        } else if (et == XI_RawKeyPress) {
-            XIRawEvent *re = xev.xcookie.data;
-            int kc = re->detail;
-            if (kc == k_alt_l || kc == k_alt_r || kc == k_super_l ||
-                kc == k_super_r || kc == k_meta_l || kc == k_meta_r ||
-                kc == k_tab || kc == k_isotab)
-                atomic_store(&g_last_switch_ms, now_ms());
+        while (XPending(dpy)) {
+            XEvent xev;
+            XNextEvent(dpy, &xev);
+            if (xev.type == PropertyNotify) {
+                /* Pinned window may have just been restacked by the WM. */
+                if (xev.xproperty.atom == net_stack_atom)
+                    process_pin(dpy);
+                continue;
+            }
+            if (xev.xcookie.type != GenericEvent || xev.xcookie.extension != xi_op)
+                continue;
+            if (!XGetEventData(dpy, &xev.xcookie))
+                continue;
+            int et = xev.xcookie.evtype;
+            if (et == XI_RawButtonPress) {
+                atomic_store(&g_last_click_ms, now_ms());
+            } else if (et == XI_RawKeyPress) {
+                XIRawEvent *re = xev.xcookie.data;
+                int kc = re->detail;
+                if (kc == k_alt_l || kc == k_alt_r || kc == k_super_l ||
+                    kc == k_super_r || kc == k_meta_l || kc == k_meta_r ||
+                    kc == k_tab || kc == k_isotab)
+                    atomic_store(&g_last_switch_ms, now_ms());
+            }
+            XFreeEventData(dpy, &xev.xcookie);
         }
-        XFreeEventData(dpy, &xev.xcookie);
+
+        process_pending_lowers(dpy);
+        process_pin(dpy);
+
+        pthread_mutex_lock(&g_lower_lock);
+        int pending = g_lower_count;
+        pthread_mutex_unlock(&g_lower_lock);
+        pending = pending || (g_pin_win != 0);
+
+        fd_set rfds;
+        FD_ZERO(&rfds);
+        FD_SET(xfd, &rfds);
+        int maxfd = xfd;
+        if (pfd >= 0) {
+            FD_SET(pfd, &rfds);
+            if (pfd > maxfd)
+                maxfd = pfd;
+        }
+        /* While a lower is pending, re-poll the title every 150ms; otherwise
+         * block until an X event or a wake byte arrives (no busy loop). */
+        struct timeval tv = { 0, 150000 };
+        select(maxfd + 1, &rfds, NULL, NULL, pending ? &tv : NULL);
+        if (pfd >= 0 && FD_ISSET(pfd, &rfds)) {
+            char buf[64];
+            while (read(pfd, buf, sizeof buf) > 0) { }
+        }
     }
     return NULL;  /* not reached */
 }
@@ -338,6 +567,24 @@ static void start_monitor_once(void) {
 
 static void ensure_monitor(void) {
     pthread_once(&g_monitor_once, start_monitor_once);
+}
+
+/* Queue a self-mapped top-level for the deferred main-window lower. The
+ * monitor thread decides by title whether it is actually the main window; a
+ * login window / dialog is titled otherwise and dropped without lowering. */
+static void enqueue_lower(Window w) {
+    ensure_monitor();
+    pthread_mutex_lock(&g_lower_lock);
+    int dup = 0;
+    for (int i = 0; i < g_lower_count; i++)
+        if (g_lower_q[i].win == w) { dup = 1; break; }
+    if (!dup && g_lower_count < LOWER_QUEUE) {
+        g_lower_q[g_lower_count].win = w;
+        g_lower_q[g_lower_count].enq_ms = now_ms();
+        g_lower_count++;
+    }
+    pthread_mutex_unlock(&g_lower_lock);
+    wake_monitor();
 }
 
 static long age_of(atomic_long *stamp) {
@@ -596,6 +843,12 @@ int XMapRaised(Display *dpy, Window w) {
     const char *why;
     int intent = has_user_intent(dpy, detail, sizeof detail, &why);
     (void)why;
+
+    /* A self-map with no user intent is a launch/restart takeover candidate.
+     * Queue it for the deferred main-window lower (5); the monitor drops it
+     * if the title shows it is not the main window. */
+    if (!intent)
+        enqueue_lower(w);
 
     if (intent || g_mode == MODE_LOG) {
         logmsg("XMapRaised win=0x%lx %s → %s",
