@@ -29,8 +29,13 @@ class TWSPlugin(PlatformPlugin):
     """Interactive Brokers TWS platform."""
 
     name = "tws"
-    supports_focus_shield = True
-    supports_restore_focus = True
+    # Focus shield (LD_PRELOAD Xlib shim) and the restore-focus watchdog
+    # (python-xlib XInput2) are X11-only; there is no LD_PRELOAD or .so on
+    # macOS/Windows. Gate the capability so the settings UI does not offer a
+    # feature that cannot work off Linux. get_launch_env() also hard-returns
+    # None on non-Linux.
+    supports_focus_shield = sys.platform == "linux"
+    supports_restore_focus = sys.platform == "linux"
 
     def get_default_config(self) -> dict[str, Any]:
         return {
