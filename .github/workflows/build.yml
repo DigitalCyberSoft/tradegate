@@ -3,6 +3,7 @@ name: Build
 on:
   push:
     branches: [master]
+    tags: ["v*"]
   pull_request:
     branches: [master]
   workflow_dispatch:
@@ -89,3 +90,31 @@ jobs:
         with:
           name: ${{ matrix.artifact }}
           path: dist/tradegate/
+
+  release:
+    needs: [build-wheel, build-standalone]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Zip standalone builds
+        run: |
+          cd artifacts
+          for d in tradegate-macos tradegate-windows; do
+            [ -d "$d" ] && (cd "$d" && zip -r "../$d.zip" .)
+          done
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release create "$GITHUB_REF_NAME"
+          --repo "$GITHUB_REPOSITORY"
+          --title "$GITHUB_REF_NAME"
+          --generate-notes
+          artifacts/wheel/* artifacts/tradegate-*.zip
