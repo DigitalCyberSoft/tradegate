@@ -23,6 +23,20 @@ linux = ["python-xlib>=0.31"]
 [project.scripts]
 tradegate = "tradegate.cli:main"
 
-[tool.setuptools.packages.find]
-where = [".."]
-include = ["tradegate*"]
+# The repo root IS the `tradegate` package (modules live here, and the code
+# imports itself as `tradegate.*`). Map the package to "." so an isolated build
+# (CI / pip install / python -m build) finds the sources in its own build tree.
+# The old `where = [".."]` pointed discovery outside the build dir: it only
+# resolved in a local checkout whose parent happened to contain this dir, and
+# produced an empty wheel everywhere else.
+[tool.setuptools]
+packages = [
+    "tradegate",
+    "tradegate.credentials",
+    "tradegate.detection",
+    "tradegate.platforms",
+    "tradegate.ui",
+]
+
+[tool.setuptools.package-dir]
+"tradegate" = "."
