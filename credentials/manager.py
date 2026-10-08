@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from tradegate.config import CONFIG_DIR
+from tradegate.config import CONFIG_DIR, load_config, save_config
 from tradegate.credentials.base import Account, CredentialBackend
 from tradegate.credentials.keyring_backend import KeyringBackend
 from tradegate.credentials.encrypted_file import EncryptedFileBackend
@@ -20,6 +20,9 @@ class CredentialManager:
         self._backends: list[CredentialBackend] = []
         self._keyring: KeyringBackend | None = None
         self._encrypted: EncryptedFileBackend | None = None
+        # Backend failures from construction; surfaced to the UI via last_errors
+        self._init_errors: list[str] = []
+        self.last_errors: list[str] = []
 
         if backend_mode in ("keyring", "both"):
             kb = KeyringBackend()
@@ -29,6 +32,9 @@ class CredentialManager:
                 kb.migrate_from_secretstorage()
             else:
                 log.warning("System keyring not available, skipping keyring backend")
+                self._init_errors.append(
+                    "System keyring not available; keyring accounts cannot be listed."
+                )
 
         if backend_mode in ("encrypted_file", "both"):
             path = encrypted_file_path or str(
@@ -69,9 +75,15 @@ class CredentialManager:
         return self._backends[0]
 
     def list_accounts(self, platform: str | None = None) -> list[Account]:
-        """List accounts from all backends, deduplicated by platform+username."""
+        """List accounts from all backends, deduplicated by platform+username.
+
+        Backends that fail are skipped so the others still list, but each
+        failure is recorded in ``last_errors`` so the caller can show it
+        instead of presenting a silently incomplete list.
+        """
         seen: set[tuple[str, str]] = set()
         accounts: list[Account] = []
+        errors = list(self._init_errors)
 
         for backend in self._backends:
             try:
@@ -80,10 +92,64 @@ class CredentialManager:
                     if key not in seen:
                         seen.add(key)
                         accounts.append(acct)
-            except Exception:
+            except Exception as exc:
                 log.warning("Failed to list accounts from %s", backend.name, exc_info=True)
+                errors.append(f"{backend.name}: {exc or type(exc).__name__}")
 
+        # The non-secret account list also lives in config.toml so a missing
+        # or replaced keyring loses only passwords, never the accounts.
+        cfg = load_config()
+        recorded = cfg.get("accounts", [])
+        recorded_keys = {(a.get("platform"), a.get("username")) for a in recorded}
+        for info in recorded:
+            key = (info.get("platform", ""), info.get("username", ""))
+            if not all(key) or key in seen or (platform and key[0] != platform):
+                continue
+            seen.add(key)
+            accounts.append(Account(
+                platform=key[0], username=key[1],
+                label=info.get("label", ""), backend="",
+            ))
+
+        # Backfill accounts that predate config recording.
+        missing = [a for a in accounts if (a.platform, a.username) not in recorded_keys]
+        if missing:
+            for acct in missing:
+                recorded.append(self._account_record(acct.platform, acct.username, acct.label))
+            cfg["accounts"] = recorded
+            save_config(cfg)
+
+        self.last_errors = errors
         return accounts
+
+    @staticmethod
+    def _account_record(platform: str, username: str, label: str) -> dict[str, str]:
+        return {"platform": platform, "username": username, "label": label}
+
+    def record_account(self, platform: str, username: str, label: str) -> None:
+        """Upsert the non-secret account details into config.toml."""
+        cfg = load_config()
+        recorded = [
+            a for a in cfg.get("accounts", [])
+            if (a.get("platform"), a.get("username")) != (platform, username)
+        ]
+        recorded.append(self._account_record(platform, username, label))
+        cfg["accounts"] = recorded
+        save_config(cfg)
+
+    def _forget_account(self, platform: str, username: str) -> bool:
+        """Remove an account from config.toml. Returns True if it was there."""
+        cfg = load_config()
+        before = cfg.get("accounts", [])
+        after = [
+            a for a in before
+            if (a.get("platform"), a.get("username")) != (platform, username)
+        ]
+        if len(after) == len(before):
+            return False
+        cfg["accounts"] = after
+        save_config(cfg)
+        return True
 
     def get_password(self, platform: str, username: str) -> str | None:
         """Try each backend in order for the password."""
@@ -135,10 +201,11 @@ class CredentialManager:
             self._keyring.store_account(platform, username, password, label)
         else:
             self.primary_backend.store_account(platform, username, password, label)
+        self.record_account(platform, username, label)
 
     def delete_account(self, platform: str, username: str) -> bool:
-        """Delete credentials from all backends."""
-        deleted = False
+        """Delete credentials from all backends and the config account list."""
+        deleted = self._forget_account(platform, username)
         for backend in self._backends:
             try:
                 if backend.delete_account(platform, username):

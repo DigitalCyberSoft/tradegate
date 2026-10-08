@@ -36,6 +36,7 @@ def pick_account(
         data = {
             "platform": platform,
             "auto_submit": auto_submit,
+            "errors": cred_manager.last_errors if cred_manager is not None else [],
             "accounts": [
                 {
                     "label": acct.label or acct.username,
@@ -52,6 +53,20 @@ def pick_account(
             return None
 
         action = result.get("action", "login")
+
+        if action == "retry":
+            # Re-reading the keyring re-triggers the system unlock prompt
+            # if the collection is locked.
+            if cred_manager is not None:
+                accounts = cred_manager.list_accounts(platform or None)
+            continue
+
+        if action == "transfer":
+            if cred_manager is not None:
+                from tradegate.ui.transfer_ui import run_transfer
+                run_transfer(cred_manager)
+                accounts = cred_manager.list_accounts(platform or None)
+            continue
 
         if action == "settings":
             _handle_settings(platform)
@@ -268,5 +283,8 @@ def _handle_edit(
                 account.platform, account.username, current_pw, new_label,
                 backend=backend,
             )
+            log.info("Updated label for %s to '%s'", account.username, new_label)
+        else:
+            mgr.record_account(account.platform, account.username, new_label)
             log.info("Updated label for %s to '%s'", account.username, new_label)
     return True

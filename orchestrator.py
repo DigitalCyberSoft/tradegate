@@ -168,6 +168,26 @@ def _get_input_strategy(strategy: str):
     return PyAutoGUIInput()
 
 
+def _prompt_missing_password(
+    platform_name: str, account, cred_mgr: CredentialManager
+) -> str | None:
+    """Prompt for a password the credential store no longer has and re-store it.
+
+    Returns the password, or None if the user cancelled.
+    """
+    from tradegate.ui._electron import run_electron_dialog
+
+    result = run_electron_dialog("add-password", {
+        "platform": platform_name,
+        "username": account.username,
+    })
+    if result is None or not result.get("password"):
+        return None
+    password = result["password"]
+    cred_mgr.store_account(platform_name, account.username, password, account.label)
+    return password
+
+
 def launch_with_account(
     platform_name: str,
     account,
@@ -206,8 +226,12 @@ def launch_with_account(
     # Retrieve password
     password = cred_mgr.get_password(platform_name, account.username)
     if password is None:
-        print(f"Error: no password found for {account.username}", file=sys.stderr)
-        return 1
+        # Account is known (config.toml) but its secret is missing, e.g. the
+        # keyring was replaced. Ask for it and store it again.
+        password = _prompt_missing_password(platform_name, account, cred_mgr)
+        if password is None:
+            print(f"Error: no password found for {account.username}", file=sys.stderr)
+            return 1
 
     # Launch platform
     cmd = plugin.get_launch_command(plat_cfg)

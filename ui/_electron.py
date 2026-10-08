@@ -71,3 +71,34 @@ def run_electron_dialog(dialog_type: str, data: dict, timeout: int = 120) -> dic
     except json.JSONDecodeError:
         log.warning("Failed to parse Electron output (%d bytes)", len(stdout))
         return None
+
+
+def start_stream_dialog(dialog_type: str, data: dict) -> subprocess.Popen:
+    """Launch a long-lived Electron dialog in --stream mode.
+
+    Write newline-delimited JSON state updates to the returned process's
+    stdin; read one JSON event per line from its stdout. EOF on stdout means
+    the window closed.
+    """
+    electron = _find_electron()
+    if electron is None:
+        raise RuntimeError(
+            "Electron binary not found. "
+            "Run 'npm install' in tradegate/ui/electron or install electron globally."
+        )
+
+    cmd = [electron, _MAIN_JS, "--dialog", dialog_type, "--stream"]
+    log.debug("Running electron stream dialog: type=%s", dialog_type)
+    proc = subprocess.Popen(
+        cmd,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+        # Own process group so close() can take down the whole Electron tree;
+        # killing only the node wrapper leaves an orphaned window behind.
+        start_new_session=True,
+    )
+    proc.stdin.write(json.dumps(data) + "\n")
+    proc.stdin.flush()
+    return proc

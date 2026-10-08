@@ -64,6 +64,16 @@ def main(argv: list[str] | None = None) -> None:
         help="Log steals but do not revert focus (validation mode)",
     )
 
+    # transfer
+    p_transfer = sub.add_parser(
+        "transfer",
+        help="Move accounts and passwords to/from another machine on this network",
+    )
+    p_transfer.add_argument(
+        "role", nargs="?", choices=["send", "receive"], default=None,
+        help="send (run first, on the machine with the passwords) or receive",
+    )
+
     args = parser.parse_args(argv)
 
     if args.verbose:
@@ -89,6 +99,8 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(_cmd_inspect(args))
     elif args.command == "watch":
         sys.exit(_cmd_watch(args))
+    elif args.command == "transfer":
+        sys.exit(_cmd_transfer(args))
 
 
 def _get_cred_manager() -> CredentialManager:
@@ -115,6 +127,15 @@ def _ensure_unlocked(mgr: CredentialManager) -> bool:
     if password is None:
         return False
     return mgr.unlock_encrypted(password)
+
+
+def _cmd_transfer(args) -> int:
+    mgr = _get_cred_manager()
+    if not _ensure_unlocked(mgr):
+        print("Error: could not unlock credential store.", file=sys.stderr)
+        return 1
+    from tradegate.ui.transfer_ui import run_transfer
+    return run_transfer(mgr, args.role)
 
 
 def _cmd_launch(args, no_submit: bool = False) -> int:

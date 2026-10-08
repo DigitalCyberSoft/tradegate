@@ -15,6 +15,8 @@
       margin-right: 4px; user-select: none;
     }
     .toggle-label input { cursor: pointer; }
+    .empty-state { padding: 24px 12px; text-align: center; color: #a0a0b8; font-size: 13px; line-height: 1.6; }
+    .backend-errors { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
   </style>
 </head>
 <body>
@@ -23,6 +25,10 @@
     <button class="titlebar-close" id="btn-close">&times;</button>
   </div>
   <div class="content">
+    <div id="backend-errors" class="warning backend-errors" style="display:none;">
+      <span id="backend-errors-text"></span>
+      <button class="secondary" id="btn-retry" title="Re-read credential stores (prompts to unlock the keyring if locked)">Unlock / Retry</button>
+    </div>
     <div class="table-container" id="table-container">
       <table>
         <thead>
@@ -35,6 +41,10 @@
         </thead>
         <tbody id="accounts-body"></tbody>
       </table>
+      <div id="empty-state" class="empty-state" style="display:none;">
+        No accounts are stored in this machine's credential store.<br>
+        Click <b>+ Add</b> to store one.
+      </div>
     </div>
     <div id="auto-submit-warning" class="warning" style="display:none; margin-bottom:8px;">
       Auto-submit may cause your password to be submitted to the wrong window if focus changes.
@@ -45,6 +55,7 @@
         <button class="secondary" id="btn-edit">Edit</button>
         <button class="danger" id="btn-delete">Delete</button>
         <button class="secondary" id="btn-settings" title="Tradegate settings">&#9881; Settings</button>
+        <button class="secondary" id="btn-transfer" title="Move accounts to or from another machine on this network">&#8644; Transfer</button>
       </div>
       <div class="button-group">
         <label class="toggle-label" title="When off, credentials are filled but Enter is not pressed">
@@ -64,6 +75,7 @@
     function renderAccounts() {
       const tbody = document.getElementById("accounts-body");
       tbody.innerHTML = "";
+      document.getElementById("empty-state").style.display = accounts.length ? "none" : "";
       accounts.forEach((acct, i) => {
         const tr = document.createElement("tr");
         tr.dataset.index = i;
@@ -82,7 +94,7 @@
         tr.appendChild(tdPlatform);
 
         const tdBackend = document.createElement("td");
-        tdBackend.textContent = acct.backend;
+        tdBackend.textContent = acct.backend || "no password (asks on login)";
         tr.appendChild(tdBackend);
 
         tr.addEventListener("click", () => {
@@ -120,6 +132,10 @@
       window.tradegate.sendResult({ action: "settings" });
     }
 
+    function doRetry() {
+      window.tradegate.sendResult({ action: "retry" });
+    }
+
     function scrollSelectedIntoView() {
       const row = document.querySelector(`tr[data-index="${selectedIndex}"]`);
       if (row) row.scrollIntoView({ block: "nearest" });
@@ -133,6 +149,8 @@
     document.getElementById("chk-auto-submit").addEventListener("change", updateWarning);
     document.getElementById("btn-login").addEventListener("click", doLogin);
     document.getElementById("btn-add").addEventListener("click", doAdd);
+    document.getElementById("btn-retry").addEventListener("click", doRetry);
+    document.getElementById("btn-transfer").addEventListener("click", () => window.tradegate.sendResult({ action: "transfer" }));
     document.getElementById("btn-settings").addEventListener("click", doSettings);
     document.getElementById("btn-edit").addEventListener("click", doEdit);
     document.getElementById("btn-delete").addEventListener("click", doDelete);
@@ -178,6 +196,10 @@
         document.getElementById("title").textContent = `Select ${data.platform} Account`;
       }
       document.getElementById("chk-auto-submit").checked = !!data.auto_submit;
+      const errors = data.errors || [];
+      document.getElementById("backend-errors-text").textContent =
+        errors.length ? `Could not read credentials: ${errors.join("; ")}` : "";
+      document.getElementById("backend-errors").style.display = errors.length ? "" : "none";
       updateWarning();
       selectedIndex = 0;
       renderAccounts();
