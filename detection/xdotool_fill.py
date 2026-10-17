@@ -13,10 +13,13 @@ class XdotoolInput:
     """Fill login forms by simulating keystrokes with xdotool.
 
     Sends keystrokes to the currently active window — no window ID targeting.
+    When fill_login_form() is given expected_wid, every keystroke is
+    preceded by a check that that window is still active.
     """
 
     def __init__(self, typing_delay_ms: int = 12) -> None:
         self._typing_delay = typing_delay_ms
+        self._guard_wid: int | None = None
 
     def fill_login_form(
         self,
@@ -42,7 +45,13 @@ class XdotoolInput:
             field_order = ["username", "password"]
 
         values = {"username": username, "password": password}
+        self._guard_wid = expected_wid
+        try:
+            return self._fill(values, field_order, auto_submit, username_prefilled, expected_wid)
+        finally:
+            self._guard_wid = None
 
+    def _fill(self, values, field_order, auto_submit, username_prefilled, expected_wid) -> bool:
         for i, field_name in enumerate(field_order):
             value = values.get(field_name, "")
             if not value:
@@ -62,18 +71,23 @@ class XdotoolInput:
                 pass
             elif i == 0:
                 # Ensure we're on the first field
-                self._send_key("Tab")
+                if not self._send_key("Tab"):
+                    return False
                 time.sleep(0.05)
-                self._send_key("shift+Tab")
+                if not self._send_key("shift+Tab"):
+                    return False
                 time.sleep(0.05)
             else:
-                self._send_key("Tab")
+                if not self._send_key("Tab"):
+                    return False
                 time.sleep(0.1)
 
             # Clear existing content and type
-            self._send_key("ctrl+a")
+            if not self._send_key("ctrl+a"):
+                return False
             time.sleep(0.02)
-            self._send_key("Delete")
+            if not self._send_key("Delete"):
+                return False
             time.sleep(0.02)
             if not self._type_text(value):
                 log.warning("Failed to type into field %r", field_name)
@@ -85,7 +99,8 @@ class XdotoolInput:
                 log.warning("Focus lost before auto-submit — aborting.")
                 return False
             time.sleep(0.2)
-            self._send_key("Return")
+            if not self._send_key("Return"):
+                return False
 
         return True
 
@@ -104,7 +119,16 @@ class XdotoolInput:
             return False
 
     def _send_key(self, key: str) -> bool:
+        if not self._guard_ok(key):
+            return False
         return self._run_xdotool(["key", key])
+
+    def _guard_ok(self, what: str) -> bool:
+        """Refuse to send input if the guarded window is no longer active."""
+        if self._guard_wid is None or self._verify_active_window(self._guard_wid):
+            return True
+        log.warning("Focus left window %d before %r — not sending.", self._guard_wid, what)
+        return False
 
     def _type_text(self, text: str) -> bool:
         """Type *text* into the currently focused field.
@@ -114,10 +138,12 @@ class XdotoolInput:
         """
         # Clipboard paste — fast for any text
         if self._clipboard_paste(text):
-            self._send_key("ctrl+v")
-            return True
+            return self._send_key("ctrl+v")
 
-        # Fallback: per-character xdotool type
+        # Fallback: per-character xdotool type. The guard runs once before
+        # the whole string; xdotool types it in a single invocation.
+        if not self._guard_ok("type"):
+            return False
         cmd = ["xdotool", "type", "--delay", str(self._typing_delay), "--clearmodifiers", "--file", "-"]
         try:
             result = subprocess.run(cmd, input=text.encode(), capture_output=True, timeout=10)

@@ -25,6 +25,7 @@ class PlatformConfig:
     wm_class: str = ""
     title_pattern: str = ""
     window_timeout: int = 120
+    update_timeout: int = 0  # max wait while plugin.is_updating(); 0 = ignore updates
     login_ready_delay: float = 8
     field_order: list[str] = field(default_factory=lambda: ["username", "password"])
     input_strategy: str = "auto"
@@ -41,6 +42,7 @@ class PlatformConfig:
             wm_class=d.get("wm_class", ""),
             title_pattern=d.get("title_pattern", ""),
             window_timeout=d.get("window_timeout", 120),
+            update_timeout=d.get("update_timeout", 0),
             login_ready_delay=d.get("login_ready_delay", 8),
             field_order=d.get("field_order", ["username", "password"]),
             input_strategy=d.get("input_strategy", "auto"),
@@ -59,6 +61,10 @@ class PlatformPlugin(ABC):
     # disable the controls instead of offering settings that do nothing.
     supports_focus_shield: bool = False
     supports_restore_focus: bool = False
+    # Number of login pages. 1 = username and password on one form. 2 =
+    # username page, submit, then a separate password page; the platform
+    # must implement get_login_page() so the orchestrator can tell them apart.
+    login_pages: int = 1
 
     @abstractmethod
     def get_default_config(self) -> dict[str, Any]:
@@ -87,3 +93,19 @@ class PlatformPlugin(ABC):
         don't implement this never trigger focus restoration.
         """
         return False
+
+    def is_updating(self, detector) -> bool:
+        """Return True while the platform's own updater is running.
+
+        While True, the login-screen wait extends past window_timeout, up
+        to update_timeout. Platforms without a detectable updater keep the
+        default.
+        """
+        return False
+
+    def get_login_page(self, detector) -> int | None:
+        """Return which login page is showing (1-based), or None if unknown.
+
+        Only consulted when login_pages > 1.
+        """
+        return None

@@ -54,11 +54,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "input_strategy": "",
         },
         "thinkorswim": {
-            "binary": "",
-            "wm_class": "thinkorswim-Launcher",
-            "title_pattern": "thinkorswim",
+            "binary": "~/thinkorswim/thinkorswim",
+            "wm_class": "java-lang-Thread",
+            "title_pattern": "Logon to thinkorswim",
             "window_timeout": 120,
-            "login_ready_delay": 8,
+            "update_timeout": 1800,  # updater can run long before the login page
+            "login_ready_delay": 1,
             "field_order": ["username", "password"],
             "input_strategy": "",
         },

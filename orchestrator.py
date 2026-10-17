@@ -276,7 +276,7 @@ def launch_with_account(
             return 1
 
         # Wait for the new login screen
-        login_wid = _wait_for_login_screen(detector, timeout=plat_cfg.window_timeout, marker=marker, exclude=existing_login, wm_class=wm_class, plugin=plugin)
+        login_wid = _wait_for_login_screen(detector, timeout=plat_cfg.window_timeout, marker=marker, exclude=existing_login, wm_class=wm_class, plugin=plugin, update_timeout=plat_cfg.update_timeout)
         if login_wid is None:
             print(
                 f"Error: timed out waiting for {platform_name} login screen "
@@ -292,6 +292,24 @@ def launch_with_account(
     t_after_delay = time.monotonic()
     log.info("Ready delay done (%.2fs elapsed)", t_after_delay - t_start)
 
+    auto_submit = general.get("auto_submit", False) and not no_submit
+
+    if plugin.login_pages == 2:
+        filled = _fill_two_page_login(
+            detector, plugin, plat_cfg, login_wid, account.username, password, auto_submit,
+        )
+        del password
+        if filled:
+            print(f"Login form filled for {account.display_name} on {platform_name}.")
+            _restore_focus_after_login(detector, plugin, plat_cfg, prev_active=prev_active)
+            return 0
+        print(
+            f"Warning: could not fill login form automatically. "
+            f"Window is open — please log in manually.",
+            file=sys.stderr,
+        )
+        return 1
+
     # Check if username is already pre-filled (e.g. "Remember Me")
     username_prefilled = _is_username_prefilled(account.username, login_wid)
     t_after_ocr = time.monotonic()
@@ -300,7 +318,6 @@ def launch_with_account(
         log.info("Username %r already pre-filled, skipping to password.", account.username)
 
     # Fill login form via the configured input strategy
-    auto_submit = general.get("auto_submit", False) and not no_submit
     input_handler = _get_input_strategy(plat_cfg.input_strategy)
     log.info("Using input strategy: %s", type(input_handler).__name__)
 
@@ -338,6 +355,66 @@ def launch_with_account(
             file=sys.stderr,
         )
         return 1
+
+
+def _wait_for_login_page(detector, plugin, page: int, timeout: float) -> bool:
+    """Poll plugin.get_login_page() until it reports *page*."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if plugin.get_login_page(detector) == page:
+            return True
+        time.sleep(0.15)
+    log.warning("Login page %d not shown within %.0fs", page, timeout)
+    return False
+
+
+def _fill_two_page_login(
+    detector, plugin, plat_cfg, login_wid, username, password, auto_submit,
+) -> bool:
+    """Fill a login split across a username page and a password page.
+
+    Page 1 is always submitted (the password page can't be reached
+    otherwise); auto_submit only governs the final submit on page 2.
+    Focus is verified before each page because pyautogui does not check it
+    itself, and keystrokes sent to the wrong window would leak the password.
+    """
+    input_handler = _get_input_strategy(plat_cfg.input_strategy)
+    log.info("Using input strategy: %s (two-page login)", type(input_handler).__name__)
+
+    from tradegate.detection.atspi_fill import AtspiInspector
+    if isinstance(input_handler, AtspiInspector):
+        log.warning("AT-SPI input strategy does not support two-page login.")
+        return False
+
+    if not _wait_for_login_page(detector, plugin, 1, plat_cfg.window_timeout):
+        return False
+    if detector.get_active_window() != login_wid:
+        log.warning("Login window lost focus before username page — aborting.")
+        return False
+    if not input_handler.fill_login_form(
+        username=username,
+        password="",
+        field_order=["username"],
+        auto_submit=True,
+        expected_wid=login_wid,
+    ):
+        return False
+
+    if not _wait_for_login_page(detector, plugin, 2, 15):
+        return False
+    if detector.get_active_window() != login_wid:
+        log.warning("Login window lost focus before password page — aborting.")
+        return False
+    # The password page autofocuses its field. username_prefilled=True makes
+    # the filler type in place instead of tab-navigating.
+    return input_handler.fill_login_form(
+        username="",
+        password=password,
+        field_order=["password"],
+        auto_submit=auto_submit,
+        username_prefilled=True,
+        expected_wid=login_wid,
+    )
 
 
 def _restore_focus_after_login(detector, plugin, plat_cfg, prev_active):
@@ -397,9 +474,17 @@ def _wait_for_login_screen(
     exclude: set[int] | None = None,
     wm_class: str = "",
     plugin=None,
+    update_timeout: int = 0,
 ) -> int | None:
-    """Poll for a window titled *marker*, activate it when found. Returns wid or None."""
-    deadline = time.monotonic() + timeout
+    """Poll for a window titled *marker*, activate it when found. Returns wid or None.
+
+    While the plugin reports its updater running, the deadline keeps moving
+    out by *timeout*, capped at update_timeout from the start of the wait.
+    """
+    start = time.monotonic()
+    deadline = start + timeout
+    update_cap = start + update_timeout
+    updating = False
     log.info("Waiting for login screen (marker=%r, wm_class=%r, timeout=%ds)", marker, wm_class, timeout)
     while time.monotonic() < deadline:
         if plugin is not None:
@@ -417,6 +502,11 @@ def _wait_for_login_screen(
             t2 = time.monotonic()
             log.info("focus_window took %.2fs (total activate+focus=%.2fs)", t2 - t1 - 0.1, t2 - t0)
             return wid
+        if update_timeout and plugin is not None and plugin.is_updating(detector):
+            if not updating:
+                log.info("Platform updater running; waiting up to %ds", update_timeout)
+                updating = True
+            deadline = max(deadline, min(time.monotonic() + timeout, update_cap))
         if log.isEnabledFor(logging.DEBUG):
             active_title = detector.get_active_window_title()
             log.debug("Active window: %r, waiting...", active_title)

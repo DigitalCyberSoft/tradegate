@@ -8,7 +8,7 @@ Auto-login launcher for trading platforms. Stores credentials securely and autom
 |----------|--------|-------|
 | **Interactive Brokers TWS** | `~/Jts/tws` | Java Swing app |
 | **tastytrade** | `/opt/tastytrade/bin/tastytrade` | Electron-based |
-| **thinkorswim** | *(configure in settings)* | Charles Schwab |
+| **thinkorswim** | `~/thinkorswim/thinkorswim` | Charles Schwab; two-page login (Login ID, then password) |
 
 ## Requirements
 
