@@ -163,7 +163,12 @@ def _get_input_strategy(strategy: str):
         from tradegate.detection.pyautogui_fill import PyAutoGUIInput
         return PyAutoGUIInput()
 
-    # "auto" — pyautogui on all platforms
+    # "auto" — xdotool on Linux, because it checks before every keystroke
+    # that the login window still has focus (pyautogui types into whatever
+    # is focused). pyautogui elsewhere.
+    if sys.platform == "linux":
+        from tradegate.detection.xdotool_fill import XdotoolInput
+        return XdotoolInput()
     from tradegate.detection.pyautogui_fill import PyAutoGUIInput
     return PyAutoGUIInput()
 
@@ -188,12 +193,55 @@ def _prompt_missing_password(
     return password
 
 
+def _acquire_launch_lock(platform_name: str):
+    """Take a per-platform lock so two launches can't fill at once.
+
+    Two concurrent launches each start the platform and race keystrokes
+    into whichever login window has focus. Returns the open lock file
+    (keep it referenced until done), or None if another launch holds it.
+    No-op on Windows, which has no fcntl.
+    """
+    if sys.platform == "win32":
+        return open(os.devnull, "w")
+    import fcntl
+    from pathlib import Path
+    lock_path = Path.home() / ".local" / "state" / "tradegate" / f"{platform_name}.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    f = open(lock_path, "w")
+    try:
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        f.close()
+        return None
+    return f
+
+
 def launch_with_account(
     platform_name: str,
     account,
     cred_mgr: CredentialManager,
     no_submit: bool = False,
     prev_active: int | None = None,
+) -> int:
+    """Launch platform and auto-fill login, one launch per platform at a time."""
+    lock = _acquire_launch_lock(platform_name)
+    if lock is None:
+        print(
+            f"Error: a {platform_name} launch is already in progress.",
+            file=sys.stderr,
+        )
+        return 1
+    with lock:
+        return _launch_with_account(platform_name, account, cred_mgr, no_submit, prev_active, lock)
+
+
+def _launch_with_account(
+    platform_name: str,
+    account,
+    cred_mgr: CredentialManager,
+    no_submit: bool = False,
+    prev_active: int | None = None,
+    lock=None,
 ) -> int:
     """Launch platform and auto-fill login for an already-selected account.
 
@@ -301,6 +349,8 @@ def launch_with_account(
         del password
         if filled:
             print(f"Login form filled for {account.display_name} on {platform_name}.")
+            if lock is not None:
+                lock.close()  # filling is done; the watchdog may run for the whole session
             _restore_focus_after_login(detector, plugin, plat_cfg, prev_active=prev_active)
             return 0
         print(
@@ -346,6 +396,8 @@ def launch_with_account(
 
     if filled:
         print(f"Login form filled for {account.display_name} on {platform_name}.")
+        if lock is not None:
+            lock.close()  # filling is done; the watchdog may run for the whole session
         _restore_focus_after_login(detector, plugin, plat_cfg, prev_active=prev_active)
         return 0
     else:

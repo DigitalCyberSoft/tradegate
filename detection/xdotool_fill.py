@@ -131,17 +131,14 @@ class XdotoolInput:
         return False
 
     def _type_text(self, text: str) -> bool:
-        """Type *text* into the currently focused field.
+        """Type *text* into the currently focused field with xdotool type.
 
-        Prefers clipboard paste via xclip + Ctrl+V (instant).
-        Falls back to xdotool type if clipboard tools are unavailable.
+        No clipboard: pasting would leave the password on the clipboard,
+        and xclip's forked server keeps captured pipes open so the copy
+        call blocks until its timeout.
         """
-        # Clipboard paste — fast for any text
-        if self._clipboard_paste(text):
-            return self._send_key("ctrl+v")
-
-        # Fallback: per-character xdotool type. The guard runs once before
-        # the whole string; xdotool types it in a single invocation.
+        # The guard runs once before the whole string; xdotool types it in
+        # a single invocation.
         if not self._guard_ok("type"):
             return False
         cmd = ["xdotool", "type", "--delay", str(self._typing_delay), "--clearmodifiers", "--file", "-"]
@@ -154,22 +151,6 @@ class XdotoolInput:
         except (subprocess.SubprocessError, FileNotFoundError) as e:
             log.warning("xdotool type error: %s", e)
             return False
-
-    @staticmethod
-    def _clipboard_paste(value: str) -> bool:
-        """Copy *value* to the X11 clipboard using xclip or xsel."""
-        for cmd in (["xclip", "-selection", "clipboard"],
-                    ["xsel", "--clipboard", "--input"]):
-            try:
-                subprocess.run(
-                    cmd, input=value.encode("utf-8"),
-                    check=True, timeout=5, capture_output=True,
-                )
-                return True
-            except (FileNotFoundError, subprocess.SubprocessError):
-                continue
-        log.debug("No clipboard tool available (tried xclip, xsel)")
-        return False
 
     def _run_xdotool(self, args: list[str]) -> bool:
         cmd = ["xdotool"] + args

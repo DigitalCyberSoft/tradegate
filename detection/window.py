@@ -150,10 +150,20 @@ class XdotoolWindowDetector(WindowDetector):
                     vals[k] = int(v)
             cx = vals["X"] + vals["WIDTH"] // 2
             cy = vals["Y"] + vals["HEIGHT"] // 2
-            import pyautogui
-            pyautogui.click(cx, cy)
+            # A real (XTEST) click: the TWS focus shield only lets the login
+            # window take focus after user input, and xdotool is already a
+            # hard dependency here (pyautogui may not be installed).
+            result = subprocess.run(
+                ["xdotool", "mousemove", str(cx), str(cy), "click", "1"],
+                capture_output=True, timeout=5,
+            )
+            if result.returncode != 0:
+                log.warning("focus click on window %d failed: %s", wid,
+                            result.stderr.decode(errors="replace").strip())
+                return False
             return True
-        except Exception:
+        except (subprocess.SubprocessError, FileNotFoundError, KeyError, ValueError) as e:
+            log.warning("focus click on window %d failed: %s", wid, e)
             return False
 
     def get_active_window_title(self) -> str:
@@ -181,12 +191,16 @@ class XdotoolWindowDetector(WindowDetector):
     def _search_all(
         self, *, wm_class: str = "", title: str = "", pid: int | None = None
     ) -> list[int]:
-        """Run xdotool search and return all matching window IDs.
+        """Run xdotool search and return all matching visible window IDs.
 
         xdotool can fail to combine --class and --name for some apps (e.g. Java),
         so we search by class first, then filter by title ourselves.
+
+        Only viewable windows are returned: Java keeps an unmapped owner
+        frame with the same title as its dialog (TWS has two "Login"
+        windows), and activating or typing into that one goes nowhere.
         """
-        cmd = ["xdotool", "search"]
+        cmd = ["xdotool", "search", "--onlyvisible"]
         if wm_class:
             cmd += ["--class", wm_class]
         elif title:
@@ -194,7 +208,7 @@ class XdotoolWindowDetector(WindowDetector):
         if pid is not None:
             cmd += ["--pid", str(pid)]
 
-        if len(cmd) == 2:
+        if len(cmd) == 3:
             return []
 
         try:
