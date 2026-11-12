@@ -14,7 +14,7 @@ Auto-login launcher for trading platforms. Stores credentials securely and autom
 
 - Python 3.11+
 - A system keyring (gnome-keyring, macOS Keychain, or Windows Credential Manager)
-- **Linux**: `xdotool`, optionally `tesseract-ocr`, `xclip`
+- **Linux**: X11 and `xdotool` (finds, focuses and types into the login window); optionally `tesseract-ocr` and ImageMagick for pre-filled username detection
 - **macOS**: Screen Recording permission for pyautogui
 - **Windows**: No extra dependencies
 
@@ -63,7 +63,7 @@ Example:
 ```toml
 [general]
 credential_backend = "keyring"   # "keyring", "encrypted_file", or "both"
-input_strategy = "auto"          # "auto", "pyautogui", "xdotool", "atspi"
+input_strategy = "auto"          # "auto" (xdotool on Linux, pyautogui elsewhere), "pyautogui", "xdotool", "atspi"
 auto_submit = false
 
 [platforms.tws]
@@ -73,7 +73,34 @@ login_ready_delay = 1
 field_order = ["username", "password"]
 focus_shield = "enforce"   # "off", "log", or "enforce" — see below
 restore_focus = true       # hand focus back after login — see below
+
+[platforms.thinkorswim]
+binary = "~/thinkorswim/thinkorswim"
+wm_class = "java-lang-Thread"
+title_pattern = "Logon to thinkorswim"
+update_timeout = 1800      # keep waiting this long while the TOS updater runs
 ```
+
+Settings saved in your config override the built-in defaults. A config
+written by an older tradegate may hold `wm_class = "thinkorswim-Launcher"`
+and `binary = ""` for thinkorswim; those match no window, so replace them
+with the values above.
+
+## thinkorswim
+
+The thinkorswim login has two pages: Login ID, then password. The form
+is a Chromium window embedded in the "Logon to thinkorswim" frame, and its
+title changes from `Charles Schwab Log In` to `Password` on the second
+page. tradegate fills the Login ID and submits it (the password page can't
+be reached otherwise), waits for the title change, then fills the password.
+`auto_submit` only controls the final Log In.
+
+thinkorswim may update itself before showing the login page. While the
+updater window is on screen, tradegate keeps waiting past
+`window_timeout`, up to `update_timeout` seconds.
+
+The two-page flow uses `xdotool`, so it is Linux only, and it does not
+handle a saved Login ID that skips the first page.
 
 ## Focus Shield (Linux/X11)
 
@@ -89,8 +116,8 @@ calling `XSetInputFocus` on its AWT focus proxy; the call may use either
 timestamp does not tell you whether you asked for the focus change. The
 shield instead gates on evidence of user intent: it allows the action only
 when a `WM_TAKE_FOCUS` message just arrived (the window manager granting
-focus after you clicked the window or its title bar) or TWS saw a
-key/button event in the last 3 seconds. The same gate covers every way TWS
+focus after you clicked the window or its title bar) **and** there was a
+recent click or window-switch key (Alt/Super/Tab). The same gate covers every way TWS
 takes over the screen:
 
 - **focus**: `XSetInputFocus` on the AWT focus proxy is dropped when
@@ -107,7 +134,8 @@ takes over the screen:
   monitor thread re-adds it whenever AWT clears it. The instant you click a
   TWS window's taskbar entry or Alt-Tab to it, the flag is released so it
   comes to the front on demand. tradegate separately un-parks the login
-  window so you can log in.
+  window so you can log in, and clicks it (a real XTEST click via
+  `xdotool`) so the shield lets it take keyboard focus for the fill.
 
 A takeover with none of the intent signals behind it — launch, reconnect,
 auto-restart — is suppressed on all three vectors. Clicking into TWS,
@@ -180,11 +208,21 @@ Two backends, usable independently or together:
 ## How It Works
 
 1. Looks up stored credentials for the chosen platform/account
-2. Launches the trading platform binary
-3. Waits for the login window to appear (matched by window class and title)
-4. Optionally OCRs the window to detect a pre-filled username (skips re-typing)
-5. Fills username and password via keyboard automation (clipboard paste preferred for speed)
-6. Optionally submits the form
+2. Takes a per-platform lock; a second launch of the same platform while one
+   is still filling exits with "launch already in progress"
+3. Launches the trading platform binary
+4. Waits for the login window to appear (matched by window class and title;
+   only visible windows count, because Java apps keep hidden windows with
+   the same title)
+5. Activates and clicks the login window so it has keyboard focus
+6. Optionally OCRs the window to detect a pre-filled username (skips re-typing)
+7. Fills username and password via keyboard automation. On Linux, each
+   keystroke is sent only if the login window is still the active window;
+   if focus moves elsewhere the fill stops and reports failure instead of
+   typing into another window. Linux types the text rather than pasting
+   it, so the password never goes on the clipboard (macOS and Windows
+   still paste through the clipboard).
+8. Optionally submits the form
 
 ## License
 
